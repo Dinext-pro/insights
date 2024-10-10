@@ -5,6 +5,7 @@ import { areDeeplyEqual, createTaskRunner } from '@/utils'
 import { useQueryColumns } from '@/utils/query/columns'
 import { useQueryFilters } from '@/utils/query/filters'
 import { useQueryTables } from '@/utils/query/tables'
+import { createToast } from '@/utils/toasts'
 import { whenever } from '@vueuse/core'
 import { debounce } from 'frappe-ui'
 import { computed, reactive } from 'vue'
@@ -31,7 +32,7 @@ export default function useQuery(name) {
 
 	// Results
 	state.MAX_ROWS = 100
-	state.isOwner = computed(() => resource.doc?.owner === session.user.user_id)
+	state.isOwner = computed(() => resource.doc?.owner === session.user.email)
 
 	state.reload = () => {
 		setLoading(true)
@@ -189,10 +190,16 @@ export default function useQuery(name) {
 		return queue(() => resource.setValue.submit({ script }).finally(() => setLoading(false)))
 	}, 500)
 
-	state.updateScriptVariables = debounce((script_variables) => {
-		if (variables === state.doc.variables) return
+	state.updateScriptVariables = debounce((variables) => {
 		setLoading(true)
-		return queue(() => resource.setValue.submit({ variables }).finally(() => setLoading(false)))
+		return queue(() =>
+			resource.setValue.submit({ variables }).finally(() => {
+				createToast({
+					title: 'Secret Variables Updated',
+				})
+				setLoading(false)
+			})
+		)
 	}, 500)
 
 	state.downloadResults = () => {
