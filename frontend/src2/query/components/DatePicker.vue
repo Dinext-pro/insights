@@ -11,6 +11,7 @@
 				placeholder="Enter date"
 				v-model="fromDateTxt"
 				autocomplete="off"
+				@update:modelValue="selectDates(), selectCurrentMonthYear()"
 			></FormControl>
 			<FormControl
 				v-if="range"
@@ -18,6 +19,7 @@
 				placeholder="Enter date"
 				v-model="toDateTxt"
 				autocomplete="off"
+				@update:modelValue="selectDates(), selectCurrentMonthYear()"
 			></FormControl>
 		</div>
 		<div class="tnum flex flex-col items-center justify-center text-base">
@@ -36,9 +38,9 @@
 						class="flex h-[30px] w-[30px] cursor-pointer items-center justify-center text-sm"
 						:class="{
 							'font-bold': toValue(date) === toValue(today),
-							' rounded-l bg-gray-800 text-white':
+							' rounded-l bg-gray-400 !font-medium':
 								fromDateTxt && toValue(date) === toValue(fromDateTxt),
-							' rounded-r bg-gray-800 text-white':
+							' rounded-r bg-gray-400 !font-medium':
 								toDateTxt && toValue(date) === toValue(toDateTxt),
 							'bg-gray-100 font-medium text-gray-800': isInRange(date),
 						}"
@@ -81,7 +83,11 @@ onBeforeMount(() => {
 })
 
 function selectCurrentMonthYear() {
-	const date = toDateTxt.value ? new Date(toDateTxt.value) : today
+	const date = toDateTxt.value
+		? new Date(toDateTxt.value)
+		: fromDateTxt.value
+		? new Date(fromDateTxt.value)
+		: today
 	currentYear.value = date.getFullYear()
 	currentMonth.value = date.getMonth() + 1
 }
@@ -257,6 +263,7 @@ function clearDates() {
 	selectDates()
 }
 
+// converts a Date object to YYYY-MM-DD string format using local timezone.
 function toValue(date: Date | string) {
 	if (!date) {
 		return ''
@@ -265,17 +272,28 @@ function toValue(date: Date | string) {
 		return date
 	}
 
-	// toISOString is buggy and reduces the day by one
-	// this is because it considers the UTC timestamp
-	// in order to circumvent that we need to use luxon/moment
-	// but that refactor could take some time, so fixing the time difference
-	// as suggested in this answer.
-	// https://stackoverflow.com/a/16084846/3541205
-	date.setHours(0, -date.getTimezoneOffset(), 0, 0)
-	return date.toISOString().slice(0, 10)
+	const year = date.getFullYear()
+	const month = String(date.getMonth() + 1).padStart(2, '0')
+	const day = String(date.getDate()).padStart(2, '0')
+	return `${year}-${month}-${day}`
 }
 
-function getDate(...args: any) {
+// js Date constructor treats YYYY-MM-DD strings as UTC midnight,
+// which causes timezone issues. For example, "2025-11-01" becomes
+// 2025-10-31 in PST (UTC-8).This function parses such strings as local dates
+// ref: https://stackoverflow.com/a/16084846/3541205
+
+function getDate(...args: any[]): Date {
+	if (args.length === 1 && typeof args[0] === 'string') {
+		const dateString = args[0]
+		const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/
+
+		if (isoDatePattern.test(dateString)) {
+			const [year, month, day] = dateString.split('-').map(Number)
+			return new Date(year, month - 1, day)
+		}
+	}
+
 	// @ts-ignore
 	return new Date(...args)
 }

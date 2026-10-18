@@ -4,7 +4,7 @@ import { areDeeplyEqual, safeJSONParse } from '@/utils'
 import { createToast } from '@/utils/toasts'
 import widgets from '@/widgets/widgets'
 import { createDocumentResource, debounce } from 'frappe-ui'
-import { getLocal, saveLocal } from 'frappe-ui/src/resources/local'
+import { getLocal, saveLocal } from 'frappe-ui'
 import { reactive } from 'vue'
 
 const session = sessionStore()
@@ -186,7 +186,7 @@ export default function useDashboard(name) {
 		return resource.fetch_chart_data.submit({
 			item_id: itemId,
 			query_name: queryName,
-			filters,
+			filters: filters?.length ? filters : undefined,
 		})
 	}
 
@@ -306,6 +306,7 @@ function getDashboardResource(name) {
 	return createDocumentResource({
 		doctype: 'Insights Dashboard',
 		name: name,
+		auto: false,
 		whitelistedMethods: {
 			fetch_chart_data: 'fetch_chart_data',
 			clear_charts_cache: 'clear_charts_cache',

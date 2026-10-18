@@ -11,13 +11,19 @@ const routes = [
 	{
 		path: '/',
 		name: 'Home',
-		redirect: '/workbook',
+		redirect: '/dashboards',
 		component: () => import('./home/Home.vue'),
 	},
 	{
-		path: '/dashboard',
+		path: '/dashboards',
 		name: 'DashboardList',
 		component: () => import('./dashboard/DashboardList.vue'),
+	},
+	{
+		props: true,
+		name: 'Dashboard',
+		path: '/dashboards/:name',
+		component: () => import('./dashboard/Dashboard.vue'),
 	},
 	{
 		path: '/workbook',
@@ -27,30 +33,36 @@ const routes = [
 	{
 		props: true,
 		name: 'Workbook',
-		path: '/workbook/:name',
+		path: '/workbook/:workbook_name',
 		component: () => import('./workbook/Workbook.vue'),
-		redirect: (to: RouteLocation) => `/workbook/${to.params.name}/query/0`,
 		meta: { hideSidebar: true },
 		children: [
 			{
 				props: true,
-				path: 'query/:index',
+				path: 'query/:query_name',
 				name: 'WorkbookQuery',
 				component: () => import('./workbook/WorkbookQuery.vue'),
 			},
 			{
 				props: true,
-				path: 'chart/:index',
+				path: 'chart/:chart_name',
 				name: 'WorkbookChart',
 				component: () => import('./workbook/WorkbookChart.vue'),
 			},
 			{
 				props: true,
-				path: 'dashboard/:index',
+				path: 'dashboard/:dashboard_name',
 				name: 'WorkbookDashboard',
 				component: () => import('./workbook/WorkbookDashboard.vue'),
 			},
 		],
+	},
+	{
+		props: true,
+		name: 'OpenTemplate',
+		path: '/template/:app/:folder',
+		component: () => import('./workbook/OpenTemplate.vue'),
+		meta: { hideSidebar: true },
 	},
 	{
 		path: '/data-source',
@@ -70,14 +82,29 @@ const routes = [
 		component: () => import('./data_source/DataSourceTable.vue'),
 	},
 	{
-		path: '/users',
-		name: 'UserList',
-		component: () => import('./users/UserList.vue'),
+		path: '/data-store',
+		name: 'DataStoreList',
+		component: () => import('./data_store/DataStoreList.vue'),
 	},
 	{
-		path: '/teams',
-		name: 'TeamList',
-		component: () => import('./teams/TeamList.vue'),
+		props: true,
+		name: 'SharedChart',
+		path: '/shared/chart/:chart_name',
+		component: () => import('./charts/SharedChart.vue'),
+		meta: {
+			hideSidebar: true,
+			isGuestView: true,
+		},
+	},
+	{
+		props: true,
+		name: 'SharedDashboard',
+		path: '/shared/dashboard/:dashboard_name',
+		component: () => import('./dashboard/SharedDashboard.vue'),
+		meta: {
+			hideSidebar: true,
+			isGuestView: true,
+		},
 	},
 	{
 		path: '/:pathMatch(.*)*',

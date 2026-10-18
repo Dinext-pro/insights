@@ -1,8 +1,9 @@
 import { watchDebounced } from '@vueuse/core'
-import { computed, ComputedRef, reactive, Ref, ref } from 'vue'
+import { computed, ComputedRef, reactive, Ref, ref, watch } from 'vue'
 import useTableStore from '../../data_source/tables'
 import { wheneverChanges } from '../../helpers'
-import { JoinArgs } from '../../types/query.types'
+import { ColumnOption, JoinArgs } from '../../types/query.types'
+import useQuery from '../query'
 
 export function handleOldProps(join: JoinArgs) {
 	// handle backward compatibility
@@ -33,9 +34,12 @@ type UseTableOptions = {
 }
 export function useTableOptions(options: UseTableOptions) {
 	const tableStore = useTableStore()
+
 	const tableOptions = computed<TableOption[]>(() => {
-		if (!tableStore.tables.length) return []
-		return tableStore.tables.map((t) => ({
+		const dataSourceTables = tableStore.tables[options.data_source.value] || []
+		if (!dataSourceTables.length) return []
+
+		return dataSourceTables.map((t) => ({
 			table_name: t.table_name,
 			data_source: t.data_source,
 			description: t.data_source,
@@ -96,4 +100,44 @@ export function useTableColumnOptions(data_source: Ref<string>, table_name: Ref<
 		options: tableColumnOptions,
 		loading: fetchingColumnOptions,
 	})
+}
+
+export function useQueryColumnOptions(query_name: Ref<string>) {
+	const queryColumnOptions = ref<ColumnOption[]>([])
+	const fetchingColumnOptions = ref(false)
+
+	watch(
+		query_name,
+		(newQueryName, oldQueryName) => {
+			// clear option when query changes
+			if (newQueryName !== oldQueryName) {
+				queryColumnOptions.value = []
+			}
+
+			if (!newQueryName) {
+				return
+			}
+
+			fetchingColumnOptions.value = true
+			const query = useQuery(newQueryName)
+
+			query
+				.getColumnsForSelection()
+				.then((columns) => {
+					queryColumnOptions.value = columns
+				})
+				.catch((error) => {
+					console.error('error:', error)
+					queryColumnOptions.value = []
+				})
+				.finally(() => {
+					fetchingColumnOptions.value = false
+				})
+		},
+			{ immediate: true }
+	)
+			return reactive({
+				options: queryColumnOptions,
+				loading: fetchingColumnOptions,
+			})
 }

@@ -1,324 +1,470 @@
-import { useDebouncedRefHistory, UseRefHistoryReturn } from '@vueuse/core'
-import { computed, reactive, ref, unref, watch } from 'vue'
-import { copy, getUniqueId, waitUntil, wheneverChanges } from '../helpers'
+import { useDebouncedRefHistory } from '@vueuse/core'
+import { computed, reactive, toRefs, watch } from 'vue'
+import {
+	copy,
+	copyToClipboard,
+	getUniqueId,
+	safeJSONParse,
+	waitUntil,
+	wheneverChanges,
+} from '../helpers'
+import { GranularityType } from '../helpers/constants'
+import useDocumentResource from '../helpers/resource'
 import { createToast } from '../helpers/toasts'
 import { column, count, query_table } from '../query/helpers'
-import { getCachedQuery, makeQuery, Query } from '../query/query'
+import useQuery, { makeAdhocQuery, Query } from '../query/query'
+import router from '../router'
+import { __ } from '../translation'
 import {
 	AXIS_CHARTS,
 	AxisChartConfig,
-	DountChartConfig,
+	BubbleChartConfig,
+	CHARTS,
+	DonutChartConfig,
+	MapChartConfig,
 	NumberChartConfig,
 	TableChartConfig,
 } from '../types/chart.types'
-import { FilterArgs, GranularityType, Operation } from '../types/query.types'
-import { WorkbookChart } from '../types/workbook.types'
+import { InsightsChartv3 } from '../types/workbook.types'
+import useWorkbook, { getLinkedQueries } from '../workbook/workbook'
+import {
+	ensureConfigSlots,
+	handleOldXAxisConfig,
+	handleOldYAxisConfig,
+	setDimensionNames,
+} from './helpers'
 
 const charts = new Map<string, Chart>()
 
-export default function useChart(workbookChart: WorkbookChart) {
-	const existingChart = charts.get(workbookChart.name)
+export default function useChart(name: string) {
+	const key = String(name)
+	const existingChart = charts.get(key)
 	if (existingChart) return existingChart
 
-	const chart = makeChart(workbookChart)
-	charts.set(workbookChart.name, chart)
+	const chart = makeChart(name)
+	charts.set(key, chart)
 	return chart
 }
 
-export function getCachedChart(name: string) {
-	return charts.get(name)
-}
+function makeChart(name: string) {
+	const chart = getChartResource(name)
 
-function makeChart(workbookChart: WorkbookChart) {
-	const chart = reactive({
-		doc: workbookChart,
-
-		baseQuery: computed(() => {
-			if (!workbookChart.query) return {} as Query
-			return getCachedQuery(workbookChart.query) as Query
-		}),
-		dataQuery: makeQuery({
-			name: getUniqueId(),
-			operations: [],
-		}),
-
-		refresh,
-		getGranularity,
-		updateGranularity,
-
-		history: {} as UseRefHistoryReturn<any, any>,
-	})
+	chart.onAfterLoad(() => useQuery(chart.doc.data_query))
 
 	wheneverChanges(
 		() => chart.doc.query,
-		() => resetConfig()
+		() => chart.isloaded && refresh()
 	)
 
+	const dataQuery = computed(() => {
+		if (!chart.isloaded) return {} as Query
+		return useQuery(chart.doc.data_query)
+	})
+
+	const isConfigValid = computed(() => validateConfig())
+	async function refresh(force?: boolean, reload?: boolean) {
+		if (reload) {
+			await chart.load()
+		}
+
+		await waitUntil(
+			() => chart.isloaded && dataQuery.value.isloaded && useQuery(chart.doc.query).isloaded
+		)
+
+		if (!isConfigValid.value) return
+
+		const query = makeAdhocQuery()
+		addSourceOperation(query)
+		addFilterOperation(query)
+		addChartOperation(query)
+		addOrderByOperation(query)
+
+		const currentLimit = chart.doc.config.limit || 100
+		const shouldExecute =
+			force ||
+			reload ||
+			!dataQuery.value.result.executedSQL ||
+			dataQuery.value.adhocFilters ||
+			JSON.stringify(query.doc.operations) !== JSON.stringify(dataQuery.value.doc.operations) ||
+			currentLimit !== dataQuery.value.pageSize
+
+		if (!shouldExecute) {
+			return
+		}
+
+		dataQuery.value.setOperations(copy(query.doc.operations))
+		dataQuery.value.doc.use_live_connection = query.doc.use_live_connection
+		return dataQuery.value.execute(force, chart.doc.config.limit)
+	}
+
+	function validateConfig() {
+		const messages = []
+		if (!chart.doc.query) {
+			messages.push({
+				variant: 'error',
+				message: __('Query is required'),
+			})
+		}
+		if (!chart.doc.chart_type) {
+			messages.push({
+				variant: 'error',
+				message: __('Chart type is required'),
+			})
+		}
+
+		if (!CHARTS.includes(chart.doc.chart_type)) {
+			messages.push({
+				variant: 'error',
+				message: __('Invalid chart type: ') + chart.doc.chart_type,
+			})
+		}
+
+		if (AXIS_CHARTS.includes(chart.doc.chart_type)) {
+			const config = chart.doc.config as AxisChartConfig
+			if (!config.x_axis.dimension || !config.x_axis.dimension.column_name) {
+				messages.push({
+					variant: 'error',
+					message: __('X-axis is required'),
+				})
+			}
+			if (config.x_axis.dimension.column_name === config.split_by?.dimension?.column_name) {
+				messages.push({
+					variant: 'error',
+					message: __('X-axis and Split by cannot be the same'),
+				})
+			}
+		}
+
+		if (chart.doc.chart_type === 'Number') {
+			const config = chart.doc.config as NumberChartConfig
+			if (!config.number_columns?.filter((c) => c.measure_name).length) {
+				messages.push({
+					variant: 'error',
+					message: __('Number column is required'),
+				})
+			}
+		}
+
+		if (chart.doc.chart_type === 'Donut' || chart.doc.chart_type === 'Funnel') {
+			const config = chart.doc.config as DonutChartConfig
+			if (!config.label_column?.column_name) {
+				messages.push({
+					variant: 'error',
+					message: __('Label column is required'),
+				})
+			}
+			if (!config.value_column?.measure_name) {
+				messages.push({
+					variant: 'error',
+					message: __('Value column is required'),
+				})
+			}
+		}
+
+		if (chart.doc.chart_type === 'Table') {
+			const config = chart.doc.config as TableChartConfig
+			if (!config.rows?.filter((r) => r.column_name).length) {
+				messages.push({
+					variant: 'error',
+					message: __('Rows are required'),
+				})
+			}
+		}
+
+		if (chart.doc.chart_type === 'Map') {
+			const config = chart.doc.config as MapChartConfig
+			const hasLocation = config.location_column.column_name
+			const hasValue = config.value_column.measure_name
+
+			if (!hasLocation) {
+				messages.push({
+					variant: 'error',
+					message: __('Location column is required'),
+				})
+			}
+
+			if (!hasValue) {
+				messages.push({
+					variant: 'error',
+					message: __('Value column is required'),
+				})
+			}
+		}
+
+		if (chart.doc.chart_type === 'Bubble') {
+			const config = chart.doc.config as BubbleChartConfig
+			if (!config.xAxis?.measure_name) {
+				messages.push({
+					variant: 'error',
+					message: __('X-axis is required'),
+				})
+			}
+			if (!config.yAxis?.measure_name) {
+				messages.push({
+					variant: 'error',
+					message: __('Y-axis is required'),
+				})
+			}
+		}
+
+		return !messages.length
+	}
+
+	function addSourceOperation(query: Query) {
+		query.setSource({
+			table: query_table({
+				query_name: chart.doc.query,
+			}),
+		})
+	}
+
+	function addFilterOperation(query: Query) {
+		if (!chart.doc.config.filters?.filters?.length) return
+		query.addFilterGroup(chart.doc.config.filters)
+	}
+
+	function addChartOperation(query: Query) {
+		if (AXIS_CHARTS.includes(chart.doc.chart_type)) {
+			addAxisChartOperation(query)
+		}
+
+		if (chart.doc.chart_type === 'Number') {
+			addNumberChartOperation(query)
+		}
+
+		if (chart.doc.chart_type === 'Donut' || chart.doc.chart_type === 'Funnel') {
+			addDonutChartOperation(query)
+		}
+
+		if (chart.doc.chart_type === 'Table') {
+			addTableChartOperation(query)
+		}
+
+		if (chart.doc.chart_type === 'Map') {
+			addMapChartOperation(query)
+		}
+
+		if (chart.doc.chart_type === 'Bubble') {
+			addBubbleChartOperation(query)
+		}
+	}
+
+	function addAxisChartOperation(query: Query) {
+		const config = chart.doc.config as AxisChartConfig
+
+		let values = config.y_axis?.series.map((s) => s.measure).filter((m) => m.measure_name)
+		values = values?.length ? values : [count()]
+
+		if (config.split_by?.dimension?.column_name) {
+			query.addPivotWider({
+				rows: [config.x_axis.dimension],
+				columns: [config.split_by.dimension],
+				values: values,
+				max_column_values: config.split_by.max_split_values || 10,
+			})
+			return
+		}
+
+		query.addSummarize({
+			measures: values,
+			dimensions: [config.x_axis.dimension],
+		})
+	}
+
+	function addNumberChartOperation(query: Query) {
+		const config = chart.doc.config as NumberChartConfig
+
+		query.addSummarize({
+			measures: config.number_columns?.filter((c) => c.measure_name),
+			dimensions: config.date_column?.column_name ? [config.date_column] : [],
+		})
+	}
+
+	function addDonutChartOperation(query: Query) {
+		const config = chart.doc.config as DonutChartConfig
+
+		query.addSummarize({
+			measures: [config.value_column],
+			dimensions: [config.label_column],
+		})
+		query.addOrderBy({
+			column: column(config.value_column.measure_name),
+			direction: 'desc',
+		})
+	}
+
+	function addTableChartOperation(query: Query) {
+		const config = chart.doc.config as TableChartConfig
+
+		let rows = config.rows.filter((r) => r.column_name)
+		let columns = config.columns.filter((c) => c.column_name)
+		let values = config.values.filter((v) => v.measure_name)
+		values = values.length ? values : []
+
+		if (columns.length) {
+			query.addPivotWider({
+				rows: rows,
+				columns: columns,
+				values: values,
+				max_column_values: config.max_column_values || 10,
+			})
+			return
+		}
+
+		query.addSummarize({
+			measures: values,
+			dimensions: rows,
+		})
+	}
+
+	function addMapChartOperation(query: Query) {
+		const config = chart.doc.config as MapChartConfig
+		let dimensions = [config.location_column]
+		query.addSummarize({
+			measures: [config.value_column],
+			dimensions: dimensions,
+		})
+	}
+
+	function addBubbleChartOperation(query: Query) {
+		const config = chart.doc.config as BubbleChartConfig
+
+		const dimensions: any[] = []
+		const measures: any[] = []
+
+		if (config.xAxis?.measure_name) {
+			measures.push(config.xAxis)
+		}
+
+		if (config.yAxis?.measure_name) {
+			measures.push(config.yAxis)
+		}
+
+		if (config.size_column?.measure_name) {
+			measures.push(config.size_column)
+		}
+
+		if (config.dimension?.column_name) {
+			dimensions.push(config.dimension)
+		}
+
+		if (config.quadrant_column?.column_name) {
+			dimensions.push(config.quadrant_column)
+		}
+
+		query.addSummarize({
+			measures: measures,
+			dimensions: dimensions,
+		})
+	}
+
+	function addOrderByOperation(query: Query) {
+		chart.doc.config.order_by.forEach((sort) => {
+			if (sort.column.column_name && sort.direction) {
+				query.addOrderBy({
+					column: column(sort.column.column_name),
+					direction: sort.direction,
+				})
+			}
+		})
+	}
+
+	function updateGranularity(column_name: string, granularity: GranularityType) {
+		if ('x_axis' in chart.doc.config) {
+			if (chart.doc.config.x_axis?.dimension?.dimension_name === column_name) {
+				chart.doc.config.x_axis.dimension.granularity = granularity
+			}
+		}
+
+		if ('date_column' in chart.doc.config) {
+			if (chart.doc.config.date_column?.dimension_name === column_name) {
+				chart.doc.config.date_column.granularity = granularity
+			}
+		}
+
+		if ('rows' in chart.doc.config) {
+			chart.doc.config.rows.forEach((row) => {
+				if (row.dimension_name === column_name) {
+					row.granularity = granularity
+				}
+			})
+		}
+	}
+
+	function getShareLink() {
+		return `${window.location.origin}/insights/shared/chart/${chart.doc.name}`
+	}
+
+	function updateAccess(is_public: boolean) {
+		return chart.call('update_access', { is_public }).then(() => chart.load())
+	}
+
+	function getDependentQueries() {
+		return [chart.doc.query, ...getLinkedQueries(chart.doc.query)]
+	}
+
+	function getDependentQueryColumns() {
+		return getDependentQueries().map((q) => {
+			const query = useQuery(q)
+			if (!query.result.executedSQL) {
+				query.execute()
+			}
+			return {
+				group: query.doc.title,
+				items: query.result.columnOptions.map((c) => {
+					const sep = '`'
+					const value = `${sep}${query.doc.name}${sep}.${sep}${c.value}${sep}`
+					return {
+						...c,
+						value,
+					}
+				}),
+			}
+		})
+	}
+
 	function resetConfig() {
-		chart.doc.config = {} as WorkbookChart['config']
-		chart.doc.config.order_by = []
-		chart.dataQuery.reset()
+		// @ts-ignore
+		chart.doc.config = {
+			order_by: [],
+			filters: chart.doc.config.filters,
+			limit: chart.doc.config.limit,
+		}
 	}
 
 	// when chart type changes from axis to non-axis or vice versa reset the config
 	watch(
 		() => chart.doc.chart_type,
 		(newType: string, oldType: string) => {
-			if (newType === oldType) return
-			if (!newType || !oldType) return
-			if (
-				(AXIS_CHARTS.includes(newType) && !AXIS_CHARTS.includes(oldType)) ||
-				(!AXIS_CHARTS.includes(newType) && AXIS_CHARTS.includes(oldType))
-			) {
+			if (!newType || newType === oldType) return
+			const crossesAxisBoundary =
+				oldType && AXIS_CHARTS.includes(newType) !== AXIS_CHARTS.includes(oldType)
+			if (crossesAxisBoundary) {
 				resetConfig()
 			}
+			ensureConfigSlots(chart.doc.config, newType)
 		}
 	)
 
-	async function refresh(filters?: FilterArgs[], force = false) {
-		if (!workbookChart.query) return
-		if (!chart.doc.chart_type) return
-		if (chart.baseQuery.executing) {
-			await waitUntil(() => !chart.baseQuery.executing)
-		}
-
-		prepareBaseQuery()
-		setCustomFilters(filters || [])
-		setChartFilters()
-		let prepared = false
-		if (AXIS_CHARTS.includes(chart.doc.chart_type)) {
-			const _config = unref(chart.doc.config as AxisChartConfig)
-			prepared = prepareAxisChartQuery(_config)
-		} else if (chart.doc.chart_type === 'Number') {
-			const _config = unref(chart.doc.config as NumberChartConfig)
-			prepared = prepareNumberChartQuery(_config)
-		} else if (chart.doc.chart_type === 'Donut') {
-			const _config = unref(chart.doc.config as DountChartConfig)
-			prepared = prepareDonutChartQuery(_config)
-		} else if (chart.doc.chart_type === 'Table') {
-			const _config = unref(chart.doc.config as TableChartConfig)
-			prepared = prepareTableChartQuery(_config)
-		} else {
-			console.warn('Unknown chart type: ', chart.doc.chart_type)
-		}
-
-		if (prepared) {
-			applySortOrder()
-			applyLimit()
-			if (shouldExecuteQuery(force)) {
-				return executeQuery()
-			}
-		}
+	function copyChart() {
+		copyToClipboard(chart.call('export').then((data) => JSON.stringify(data, null, 2)))
 	}
 
-	function prepareAxisChartQuery(config: AxisChartConfig) {
-		if (!config.x_axis || !config.x_axis.column_name) {
-			console.warn('X-axis is required')
-			chart.dataQuery.reset()
-			return false
-		}
-		if (config.x_axis.column_name === config.split_by?.column_name) {
-			createToast({
-				message: 'X-axis and Split by cannot be the same',
-				variant: 'error',
+	function duplicateChart() {
+		const workbook = useWorkbook(chart.doc.workbook)
+		return chart
+			.call('duplicate')
+			.then((newChartName: string) => {
+				createToast({
+					title: __('Chart duplicated'),
+					variant: 'success',
+				})
+				router.push(`/workbook/${chart.doc.workbook}/chart/${newChartName}`)
 			})
-			chart.dataQuery.reset()
-			return false
-		}
-
-		const values = config.y_axis?.series.map((s) => s.measure).filter((m) => m.measure_name) || [
-			count(),
-		]
-
-		if (config.split_by?.column_name) {
-			chart.dataQuery.addPivotWider({
-				rows: [config.x_axis],
-				columns: [config.split_by],
-				values: values,
-			})
-		} else {
-			chart.dataQuery.addSummarize({
-				measures: values,
-				dimensions: [config.x_axis],
-			})
-		}
-
-		return true
+			.then(workbook.load)
 	}
 
-	function prepareNumberChartQuery(config: NumberChartConfig) {
-		if (!config.number_columns?.length) {
-			console.warn('Number column is required')
-			chart.dataQuery.reset()
-			return false
-		}
-
-		chart.dataQuery.addSummarize({
-			measures: config.number_columns,
-			dimensions: config.date_column?.column_name ? [config.date_column] : [],
-		})
-
-		return true
-	}
-
-	function prepareDonutChartQuery(config: DountChartConfig) {
-		if (!config.label_column) {
-			console.warn('Label is required')
-			chart.dataQuery.reset()
-			return false
-		}
-		if (!config.value_column) {
-			console.warn('Value is required')
-			chart.dataQuery.reset()
-			return false
-		}
-
-		const label = config.label_column
-		const value = config.value_column
-		if (!label) {
-			console.warn('Label column not found')
-			chart.dataQuery.reset()
-			return false
-		}
-		if (!value) {
-			console.warn('Value column not found')
-			chart.dataQuery.reset()
-			return false
-		}
-
-		chart.dataQuery.addSummarize({
-			measures: [value],
-			dimensions: [label],
-		})
-		chart.dataQuery.addOrderBy({
-			column: column(value.measure_name),
-			direction: 'desc',
-		})
-
-		return true
-	}
-
-	function prepareTableChartQuery(config: TableChartConfig) {
-		let rows = config.rows.filter((r) => r.column_name)
-		let columns = config.columns.filter((c) => c.column_name)
-		let values = config.values.filter((v) => v.measure_name)
-
-		if (!rows.length) {
-			console.warn('Rows are required')
-			chart.dataQuery.reset()
-			return false
-		}
-
-		if (!columns?.length) {
-			chart.dataQuery.addSummarize({
-				measures: values || [count()],
-				dimensions: rows,
-			})
-		}
-		if (columns?.length) {
-			chart.dataQuery.addPivotWider({
-				rows: rows,
-				columns: columns,
-				values: values || [count()],
-			})
-		}
-
-		return true
-	}
-
-	function applySortOrder() {
-		if (!chart.doc.config.order_by) return
-		chart.doc.config.order_by.forEach((sort) => {
-			if (!sort.column.column_name || !sort.direction) return
-			chart.dataQuery.addOrderBy({
-				column: column(sort.column.column_name),
-				direction: sort.direction,
-			})
-		})
-	}
-
-	function applyLimit() {
-		if (chart.doc.config.limit) {
-			chart.dataQuery.addLimit(chart.doc.config.limit)
-		}
-	}
-
-	function prepareBaseQuery() {
-		chart.dataQuery.autoExecute = false
-		chart.dataQuery.setOperations([])
-		chart.dataQuery.setSource({
-			table: query_table({
-				query_name: workbookChart.query,
-			}),
-		})
-		chart.dataQuery.doc.use_live_connection = chart.baseQuery.doc.use_live_connection
-	}
-	function setCustomFilters(filters: FilterArgs[]) {
-		const _filters = new Set(filters)
-		if (_filters.size) {
-			chart.dataQuery.addFilterGroup({
-				logical_operator: 'And',
-				filters: Array.from(_filters),
-			})
-		}
-	}
-
-	const lastExecutedQueryOperations = ref<Operation[]>([])
-	function shouldExecuteQuery(force = false) {
-		if (force) return true
-		return (
-			JSON.stringify(lastExecutedQueryOperations.value) !==
-			JSON.stringify(chart.dataQuery.currentOperations)
-		)
-	}
-	async function executeQuery() {
-		return chart.dataQuery.execute().then(() => {
-			lastExecutedQueryOperations.value = copy(chart.dataQuery.currentOperations)
-		})
-	}
-
-	function getGranularity(column_name: string): GranularityType | undefined {
-		const column = Object.entries(chart.doc.config).find(([_, value]) => {
-			if (!value) return false
-			if (Array.isArray(value)) {
-				return value.some((v) => v.column_name === column_name)
-			}
-			if (typeof value === 'object') {
-				return value.column_name === column_name
-			}
-			return false
-		})
-		if (!column) return
-
-		if (Array.isArray(column[1])) {
-			const granularity = column[1].find((v) => v.column_name === column_name)?.granularity
-			return granularity
-		}
-
-		const granularity = column[1].granularity
-		return granularity
-	}
-
-	function updateGranularity(column_name: string, granularity: GranularityType) {
-		Object.entries(chart.doc.config).forEach(([_, value]) => {
-			if (Array.isArray(value)) {
-				const index = value.findIndex((v) => v.column_name === column_name)
-				if (index > -1) {
-					value[index].granularity = granularity
-				}
-			}
-			if (value.column_name === column_name) {
-				value.granularity = granularity
-			}
-		})
-	}
-
-	function setChartFilters() {
-		if (!chart.doc.config.filters?.filters?.length) return
-		chart.dataQuery.addFilterGroup(chart.doc.config.filters)
-	}
-
-	chart.history = useDebouncedRefHistory(
+	const history = useDebouncedRefHistory(
 		// @ts-ignore
 		computed({
 			get: () => chart.doc,
@@ -326,12 +472,134 @@ function makeChart(workbookChart: WorkbookChart) {
 		}),
 		{
 			deep: true,
-			max: 100,
+			capacity: 100,
 			debounce: 500,
 		}
 	)
 
-	return chart
+	waitUntil(() => chart.isloaded).then(() => {
+		wheneverChanges(
+			() => chart.doc.title,
+			() => {
+				if (!chart.doc.workbook) return
+				const workbook = useWorkbook(chart.doc.workbook)
+				for (const c of workbook.doc.charts) {
+					if (c.name === chart.doc.name) {
+						c.title = chart.doc.title
+						break
+					}
+				}
+			},
+			{ debounce: 500 }
+		)
+	})
+
+	return reactive({
+		...toRefs(chart),
+
+		dataQuery,
+		isConfigValid,
+
+		refresh,
+		updateGranularity,
+		resetConfig,
+
+		getShareLink,
+		updateAccess,
+
+		getDependentQueries,
+		getDependentQueryColumns,
+
+		copy: copyChart,
+		duplicate: duplicateChart,
+		openInDesk: () => window.open(`/app/insights-chart-v3/${chart.doc.name}`, '_blank'),
+
+		history,
+	})
 }
 
 export type Chart = ReturnType<typeof makeChart>
+
+const INITIAL_DOC: InsightsChartv3 = {
+	doctype: 'Insights Chart v3',
+	name: '',
+	owner: '',
+	title: '',
+	workbook: '',
+	query: '',
+	data_query: '',
+	chart_type: '',
+	sort_order: 0,
+	is_public: false,
+	config: {} as InsightsChartv3['config'],
+	operations: [],
+	read_only: false,
+}
+
+function getChartResource(name: string) {
+	const doctype = 'Insights Chart v3'
+	const chart = useDocumentResource<InsightsChartv3>(doctype, name, {
+		initialDoc: { ...INITIAL_DOC, name },
+		enableAutoSave: true,
+		disableLocalStorage: true,
+		transform: transformChartDoc,
+	})
+	wheneverChanges(
+		() => chart.doc.read_only,
+		() => {
+			if (chart.doc.read_only) {
+				chart.autoSave = false
+			}
+		}
+	)
+	return chart
+}
+
+function transformChartDoc(doc: any) {
+	doc.config = safeJSONParse(doc.config) || {}
+	doc.operations = safeJSONParse(doc.operations) || []
+
+	doc.config.filters = doc.config.filters?.filters?.length
+		? doc.config.filters
+		: {
+				filters: [],
+				logical_operator: 'And',
+		  }
+	doc.config.order_by = doc.config.order_by || []
+	doc.config.limit = doc.config.limit || 100
+
+	if ('x_axis' in doc.config && doc.config.x_axis) {
+		// @ts-ignore
+		doc.config.x_axis = handleOldXAxisConfig(doc.config.x_axis)
+	}
+	if ('y_axis' in doc.config && Array.isArray(doc.config.y_axis)) {
+		// @ts-ignore
+		doc.config.y_axis = handleOldYAxisConfig(doc.config.y_axis)
+	}
+	if ('split_by' in doc.config && doc.config.split_by) {
+		// @ts-ignore
+		doc.config.split_by = handleOldXAxisConfig(doc.config.split_by)
+	}
+	if (doc.chart_type === 'Funnel') {
+		// @ts-ignore
+		doc.config.label_position = doc.config.label_position || 'left'
+	}
+	if (doc.chart_type === 'Donut') {
+		doc.config.legend_position = doc.config.legend_position || 'bottom'
+	}
+
+	doc.config = setDimensionNames(doc.config)
+	doc.config = ensureConfigSlots(doc.config, doc.chart_type)
+
+	// The bar config form writes this default when it mounts, which leaves a
+	// freshly opened chart dirty. Set it on load instead.
+	if (doc.chart_type === 'Bar' && doc.config.y_axis.stack === undefined) {
+		doc.config.y_axis.stack = true
+	}
+
+	return doc
+}
+
+export function newChart() {
+	return getChartResource('new-chart-' + getUniqueId())
+}

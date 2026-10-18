@@ -12,6 +12,7 @@
 		@focus="emit('focus')"
 		@blur="emit('blur')"
 		@ready="codeMirror = $event"
+		:class="$attrs.class"
 	/>
 </template>
 
@@ -20,11 +21,12 @@ import { autocompletion, closeBrackets } from '@codemirror/autocomplete'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { MySQL, sql } from '@codemirror/lang-sql'
-import { HighlightStyle, syntaxHighlighting, syntaxTree } from '@codemirror/language'
-import { EditorView } from '@codemirror/view'
-import { tags } from '@lezer/highlight'
+import { syntaxTree } from '@codemirror/language'
+import { linter } from '@codemirror/lint'
+import { Decoration, EditorView, ViewPlugin } from '@codemirror/view'
 import { onMounted, ref, watch } from 'vue'
 import { Codemirror } from 'vue-codemirror'
+import { tomorrow } from 'thememirror'
 
 const props = defineProps({
 	modelValue: String,
@@ -64,6 +66,18 @@ const props = defineProps({
 		type: Boolean,
 		default: false,
 	},
+	multiLine: {
+		type: Boolean,
+		default: true,
+	},
+	columnNames: {
+		type: Array,
+		default: () => [],
+	},
+	validationErrors: {
+		type: Array,
+		default: () => [],
+	},
 })
 const emit = defineEmits(['inputChange', 'viewUpdate', 'focus', 'blur'])
 
@@ -95,15 +109,96 @@ const language =
 	props.language === 'javascript'
 		? javascript()
 		: props.language === 'python'
-		? python()
-		: sql({
-				dialect: MySQL,
-				upperCaseKeywords: true,
-				schema: props.schema,
-				tables: props.tables,
-		  })
+		  ? python()
+		  : sql({
+					dialect: MySQL,
+					upperCaseKeywords: true,
+					schema: props.schema,
+					tables: props.tables,
+		    })
 
-const extensions = [language, closeBrackets(), EditorView.lineWrapping]
+const columnHighlighter = ViewPlugin.fromClass(
+	class {
+		decorations
+
+		constructor(view) {
+			this.decorations = this.buildDecorations(view)
+		}
+
+		update(update) {
+			if (update.docChanged || update.viewportChanged) {
+				this.decorations = this.buildDecorations(update.view)
+			}
+		}
+
+		buildDecorations(view) {
+			if (!props.columnNames || props.columnNames.length === 0) {
+				return Decoration.none
+			}
+
+			const decorations = []
+			const columnSet = new Set(props.columnNames)
+			const doc = view.state.doc
+
+			for (let i = 1; i <= doc.lines; i++) {
+				const line = doc.line(i)
+				const text = line.text
+
+				// match only whole words ie `signups` but not `signups_today`
+				const wordRegex = /\b\w+\b/g
+				let match
+
+				while ((match = wordRegex.exec(text)) !== null) {
+					const word = match[0]
+					if (columnSet.has(word)) {
+						const from = line.from + match.index
+						const to = from + word.length
+						decorations.push(
+							Decoration.mark({
+								class: 'cm-column-highlight',
+							}).range(from, to),
+						)
+					}
+				}
+			}
+
+			return Decoration.set(decorations)
+		}
+	},
+	{
+		decorations: (v) => v.decorations,
+	},
+)
+
+const validationLinter = linter((view) => {
+	const diagnostics = []
+
+	for (const error of props.validationErrors) {
+		if (!error.line) continue
+		const line = view.state.doc.line(error.line)
+		const from = error.column ? line.from + error.column - 1 : line.from
+		const to = error.column ? from + 1 : line.to
+
+		diagnostics.push({
+			from: Math.max(0, from),
+			to: Math.min(view.state.doc.length, to),
+			severity: 'error',
+			message: error.message + (error.hint ? `\n${error.hint}` : ''),
+		})
+	}
+	return diagnostics
+})
+
+const extensions = [language, closeBrackets(), tomorrow, validationLinter]
+
+if (props.multiLine) {
+	extensions.push(EditorView.lineWrapping)
+}
+
+if (props.columnNames && props.columnNames.length > 0) {
+	extensions.push(columnHighlighter)
+}
+
 const autocompletionOptions = {
 	activateOnTyping: true,
 	closeOnBlur: false,
@@ -120,77 +215,6 @@ if (props.completions) {
 }
 extensions.push(autocompletion(autocompletionOptions))
 
-const chalky = '#e5a05b',
-	coral = '#b04a54',
-	cyan = '#45a5b1',
-	invalid = '#ffffff',
-	ivory = '#6a6a6a',
-	stone = '#7d8799', // Brightened compared to original to increase contrast
-	malibu = '#61afef',
-	sage = '#76c457',
-	whiskey = '#d19a66',
-	violet = '#c678dd'
-
-const getHighlighterStyle = () =>
-	HighlightStyle.define([
-		{ tag: tags.keyword, color: violet },
-		{
-			tag: [tags.name, tags.deleted, tags.character, tags.propertyName, tags.macroName],
-			color: coral,
-		},
-		{
-			tag: [tags.function(tags.variableName), tags.labelName],
-			color: malibu,
-		},
-		{
-			tag: [tags.color, tags.constant(tags.name), tags.standard(tags.name)],
-			color: whiskey,
-		},
-		{ tag: [tags.definition(tags.name), tags.separator], color: ivory },
-		{
-			tag: [
-				tags.typeName,
-				tags.className,
-				tags.number,
-				tags.changed,
-				tags.annotation,
-				tags.modifier,
-				tags.self,
-				tags.namespace,
-			],
-			color: chalky,
-		},
-		{
-			tag: [
-				tags.operator,
-				tags.operatorKeyword,
-				tags.url,
-				tags.escape,
-				tags.regexp,
-				tags.link,
-				tags.special(tags.string),
-			],
-			color: cyan,
-		},
-		{ tag: [tags.meta, tags.comment], color: stone },
-		{ tag: tags.strong, fontWeight: 'bold' },
-		{ tag: tags.emphasis, fontStyle: 'italic' },
-		{ tag: tags.strikethrough, textDecoration: 'line-through' },
-		{ tag: tags.link, color: stone, textDecoration: 'underline' },
-		{ tag: tags.heading, fontWeight: 'bold', color: coral },
-		{
-			tag: [tags.atom, tags.bool, tags.special(tags.variableName)],
-			color: whiskey,
-		},
-		{
-			tag: [tags.processingInstruction, tags.string, tags.inserted],
-			color: sage,
-		},
-		{ tag: tags.invalid, color: invalid },
-	])
-
-extensions.push(syntaxHighlighting(getHighlighterStyle()))
-
 defineExpose({
 	get cursorPos() {
 		return codeMirror.value.view.state.selection.ranges[0].to
@@ -199,6 +223,15 @@ defineExpose({
 	setCursorPos: (pos) => {
 		const _pos = Math.min(pos, code.value.length)
 		codeMirror.value.view.dispatch({ selection: { anchor: _pos, head: _pos } })
+	},
+	insertText: (text) => {
+		const view = codeMirror.value.view
+		const pos = view.state.selection.ranges[0].to
+		view.dispatch({
+			changes: { from: pos, insert: text },
+			selection: { anchor: pos + text.length, head: pos + text.length },
+		})
+		view.focus()
 	},
 })
 </script>

@@ -1,15 +1,26 @@
-import { Dimension, Measure } from "./query.types"
+import { FormatGroupArgs } from '../query/components/formatting_utils'
+import { Dimension, Measure } from './query.types'
 
-export const AXIS_CHARTS = ['Bar', 'Line']
+export const AXIS_CHARTS = ['Bar', 'Line', 'Row']
 export type AxisChartType = (typeof AXIS_CHARTS)[number]
 
-export const CHARTS = ['Number', ...AXIS_CHARTS, 'Donut', 'Funnel', 'Table']
+export const CHARTS = ['Number', ...AXIS_CHARTS, 'Donut', 'Funnel', 'Table', 'Map', 'Bubble', 'Sankey']
 export type ChartType = (typeof CHARTS)[number]
 
 export type AxisChartConfig = {
-	x_axis: Dimension
+	x_axis: XAxis
 	y_axis: YAxis
-	split_by?: Dimension
+	split_by?: SplitBy
+}
+
+export type XAxis = {
+	dimension: Dimension
+	label_rotation?: number
+}
+
+export type SplitBy = {
+	dimension: Dimension
+	max_split_values?: number
 }
 
 export type YAxis = {
@@ -19,19 +30,38 @@ export type YAxis = {
 	axis_label?: string
 	show_axis_label?: boolean
 	show_data_labels?: boolean
+	show_scrollbar?: boolean
+	reference_lines?: ReferenceLine[]
+}
+export type ReferenceLine = {
+	// 'y' draws a horizontal line at a measure value, 'x' a vertical line at a category/date value
+	axis?: 'x' | 'y'
+	// which value axis a 'y' line targets on a dual-axis chart; defaults to the primary (left)
+	align?: 'Left' | 'Right'
+	// a fixed position on the axis; ignored when `statistic` is set
+	value?: number | string
+	// read the line's position off the plotted rows on the axis it targets, instead of
+	// a fixed value; y lines only, since a category axis has no statistic
+	statistic?: 'average' | 'median' | 'min' | 'max' | null
+	label?: string
+	color?: string
+	dashed?: boolean
 }
 export type Series = {
 	name?: string
 	measure: Measure
 	color?: string[]
+	type?: 'line' | 'bar'
 	align?: 'Left' | 'Right'
 	show_data_labels?: boolean
+	hide_from_chart?: boolean
 }
 export type YAxisLine = Series & {
 	series: SeriesLine[]
 	smooth?: boolean
 	show_data_points?: boolean
 	show_area?: boolean
+
 }
 export type SeriesLine = Series & {
 	type: 'line'
@@ -43,6 +73,7 @@ export type YAxisBar = Series & {
 	series: SeriesBar[]
 	stack?: boolean
 	normalize?: boolean
+	overlap?: boolean
 }
 export type SeriesBar = Series & {
 	type: 'bar'
@@ -60,8 +91,10 @@ export type MixedChartConfig = AxisChartConfig & {
 
 export type NumberChartConfig = {
 	number_columns: Measure[]
+	number_column_options: NumberColumnOptions[]
 	comparison: boolean
 	sparkline: boolean
+	sparkline_color?: string
 	date_column?: Dimension
 	shorten_numbers?: boolean
 	decimal?: number
@@ -69,25 +102,100 @@ export type NumberChartConfig = {
 	suffix?: string
 	negative_is_better?: boolean
 }
+export type NumberColumnOptions = {
+	shorten_numbers?: boolean
+	decimal?: number
+	prefix?: string
+	suffix?: string
+	color?: string
+}
 
-export type DountChartConfig = {
+export type DonutChartConfig = {
 	label_column: Dimension
 	value_column: Measure
 	legend_position?: 'top' | 'bottom' | 'left' | 'right'
+	max_slices?: number
+	show_inline_labels?: boolean
 }
 export type FunnelChartConfig = {
 	label_column: Dimension
 	value_column: Measure
+	show_percentage?: boolean
 }
 
 export type TableChartConfig = {
 	rows: Dimension[]
 	columns: Dimension[]
 	values: Measure[]
+	max_column_values?: number
 	show_filter_row?: boolean
 	show_row_totals?: boolean
 	show_column_totals?: boolean
-	conditional_formatting?: boolean
+	compact_numbers?: boolean
+	enable_color_scale?: boolean
+	sticky_columns?: string[]
+	column_widths?: Record<string, number>
+	text_wrap?: Record<string, boolean>
+	conditional_formatting?: FormatGroupArgs
 }
 
-export type ChartConfig = LineChartConfig | BarChartConfig | NumberChartConfig | DountChartConfig | TableChartConfig | FunnelChartConfig
+export type MapChartConfig = {
+	location_column: Dimension
+	value_column: Measure
+	map_type?: 'world' | 'india'
+	region_mappings?: {
+		world?: Record<string, string>
+		india?: Record<string, string>
+	}
+}
+
+export type BubbleChartConfig = {
+	xAxis: Measure
+	yAxis: Measure
+	size_column?: Measure
+	dimension?: Dimension
+	quadrant_column?: Dimension
+	show_data_labels?: boolean
+	show_quadrants?: boolean
+	xAxis_refLine?: number
+	yAxis_refLine?: number
+}
+
+export type SankeyChartConfig = {
+	source_column: Dimension
+	target_column: Dimension
+	value_column: Measure
+	orient?: 'horizontal' | 'vertical'
+	node_align?: 'left' | 'right' | 'justify'
+}
+
+export type ChartConfig =
+	| LineChartConfig
+	| BarChartConfig
+	| NumberChartConfig
+	| DonutChartConfig
+	| TableChartConfig
+	| FunnelChartConfig
+	| MapChartConfig
+	| BubbleChartConfig
+	| SankeyChartConfig
+
+export interface Suggestion {
+		region: string
+		similarity: number
+	}
+
+export interface Region {
+		user_region: string
+		mapped_to?: string
+		suggestions?: Suggestion[]
+	}
+
+export interface MappingData {
+		total: number
+		resolved: number
+		unresolved: number
+		unresolved_list: Region[]
+		manual_mappings: Record<string, string>
+		available_regions: string[]
+	}

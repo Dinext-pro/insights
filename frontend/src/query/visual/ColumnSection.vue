@@ -34,7 +34,7 @@ function isExpressionColumn(column) {
 function onColumnSelect(column) {
 	if (!column) return
 	const columnAlreadyExists = columns.value.find(
-		(c) => c.table === column.table && c.column === column.column && c.label === column.label
+		(c) => c.table === column.table && c.column === column.column && c.label === column.label,
 	)
 	if (columnAlreadyExists) {
 		return
@@ -80,6 +80,7 @@ function onColumnSort(e) {
 			info="Select the columns you want to see in the results."
 		>
 			<Autocomplete
+				class="!w-fit"
 				:modelValue="columns"
 				bodyClasses="w-[18rem]"
 				@update:modelValue="onColumnSelect"
@@ -110,13 +111,14 @@ function onColumnSort(e) {
 			:showHandle="false"
 		>
 			<template #item="{ item: column, index: idx }">
-				<ColumnListItem
-					v-if="isExpressionColumn(column)"
-					:column="column"
-					:isActive="activeColumnIdx === idx"
-					@edit-column="activeColumnIdx = idx"
-					@remove-column="assistedQuery.removeColumnAt(idx)"
-				/>
+				<div v-if="isExpressionColumn(column)">
+					<ColumnListItem
+						:column="column"
+						:isActive="activeColumnIdx === idx"
+						@edit-column="activeColumnIdx = idx"
+						@remove-column="assistedQuery.removeColumnAt(idx)"
+					/>
+				</div>
 				<Popover
 					v-else
 					:show="showSimpleColumnEditor && activeColumnIdx === idx"

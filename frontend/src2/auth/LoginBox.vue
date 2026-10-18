@@ -1,8 +1,12 @@
 <template>
 	<div class="h-full w-full pt-4 sm:pt-16">
-		<div class="relative z-10">
+		<div class="relative">
 			<div class="flex">
-				<img src="../assets/insights-logo-new.svg" class="mx-auto h-12" />
+				<img
+					src="../assets/insights-logo-new.svg"
+					alt="Frappe Insights"
+					class="mx-auto h-12"
+				/>
 			</div>
 			<div
 				class="mx-auto bg-white px-4 py-8 sm:mt-6 sm:w-96 sm:rounded-lg sm:px-8 sm:shadow-xl"
@@ -13,7 +17,7 @@
 				<slot></slot>
 			</div>
 		</div>
-		<div class="fixed bottom-4 z-[1] flex w-full justify-center">
+		<div class="fixed bottom-4 flex w-full justify-center">
 			<FrappeLogo class="h-4" />
 		</div>
 	</div>

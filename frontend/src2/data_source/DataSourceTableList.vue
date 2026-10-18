@@ -5,9 +5,11 @@ import { MoreHorizontal, RefreshCcw, SearchIcon } from 'lucide-vue-next'
 import { h, ref, watchEffect } from 'vue'
 import useDataSourceStore from './data_source'
 import useTableStore, { DataSourceTable } from './tables'
+import { __ } from '../translation'
 
 const props = defineProps<{ name: string }>()
 
+const dataSource = useDataSourceStore().getSource(props.name)
 const tableStore = useTableStore()
 
 const searchQuery = ref('')
@@ -23,7 +25,7 @@ function updateTablesList() {
 const listOptions = ref({
 	columns: [
 		{
-			label: 'Table Name',
+			label: __('Table Name'),
 			key: 'table_name',
 		},
 	],
@@ -35,10 +37,10 @@ const listOptions = ref({
 			path: `/data-source/${props.name}/${table.table_name}`,
 		}),
 		emptyState: {
-			title: 'No Tables Found',
-			description: 'No tables found for the selected data source.',
+			title: __('No Tables Found'),
+			description: __('No tables found for the selected data source.'),
 			button: {
-				label: 'Refresh',
+				label: __('Refresh'),
 				iconLeft: 'refresh-ccw',
 				variant: 'outline',
 				loading: tableStore.updatingDataSourceTables,
@@ -57,17 +59,17 @@ watchEffect(() => {
 </script>
 
 <template>
-	<header class="mb-2 flex h-12 items-center justify-between border-b py-2.5 pl-5 pr-2">
+	<header class="flex h-12 items-center justify-between border-b py-2.5 pl-5 pr-2">
 		<Breadcrumbs
 			:items="[
-				{ label: 'Data Sources', route: '/data-source' },
-				{ label: props.name, route: `/data-source/${props.name}` },
+				{ label: __('Data Sources'), route: '/data-source' },
+				{ label: dataSource?.title || props.name, route: `/data-source/${props.name}` },
 			]"
 		/>
 		<div class="flex items-center gap-2"></div>
 	</header>
 
-	<div class="mb-4 flex h-full flex-col gap-2 overflow-auto px-4">
+	<div class="mb-4 flex h-full flex-col gap-3 overflow-auto px-5 py-3">
 		<div class="flex gap-2 overflow-visible py-1">
 			<FormControl placeholder="Search by Title" v-model="searchQuery" :debounce="300">
 				<template #prefix>
@@ -77,7 +79,7 @@ watchEffect(() => {
 			<Dropdown
 				:options="[
 					{
-						label: 'Update Tables',
+						label: __('Update Tables'),
 						onClick: () =>
 							tableStore
 								.updateDataSourceTables(props.name)
@@ -88,6 +90,17 @@ watchEffect(() => {
 								'stroke-width': '1.5',
 							}),
 					},
+					dataSource?.is_frappe_db
+						? {
+								label: __('Update Table Links'),
+								onClick: () => tableStore.updateTableLinks(props.name),
+								icon: () =>
+									h(RefreshCcw, {
+										class: 'h-4 w-4 text-gray-700',
+										'stroke-width': '1.5',
+									}),
+						  }
+						: null,
 				]"
 			>
 				<Button>

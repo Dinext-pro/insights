@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watchEffect } from 'vue'
+import { __ } from '../../translation'
 import { FIELDTYPES } from '../../helpers/constants'
-import { DountChartConfig } from '../../types/chart.types'
-import { DimensionOption, MeasureOption } from './ChartConfigForm.vue'
+import { DonutChartConfig } from '../../types/chart.types'
+import { ColumnOption, Dimension, DimensionOption, Measure } from '../../types/query.types'
 import CollapsibleSection from './CollapsibleSection.vue'
+import DimensionPicker from './DimensionPicker.vue'
+import MeasurePicker from './MeasurePicker.vue'
 
 const props = defineProps<{
 	dimensions: DimensionOption[]
-	measures: MeasureOption[]
+	columnOptions: ColumnOption[]
 }>()
 
-const config = defineModel<DountChartConfig>({
+const config = defineModel<DonutChartConfig>({
 	required: true,
 	default: () => ({
 		label_column: {},
@@ -18,40 +21,47 @@ const config = defineModel<DountChartConfig>({
 	}),
 })
 
+watchEffect(() => {
+	if (!config.value.label_column) {
+		config.value.label_column = {} as Dimension
+	}
+	if (!config.value.value_column) {
+		config.value.value_column = {} as Measure
+	}
+})
+
 const discrete_dimensions = computed(() =>
-	props.dimensions.filter((d) => FIELDTYPES.DISCRETE.includes(d.data_type))
+	props.dimensions.filter((d) => FIELDTYPES.DISCRETE.includes(d.data_type)),
 )
 </script>
 
 <template>
 	<CollapsibleSection title="Options">
 		<div class="flex flex-col gap-3 pt-1">
-			<Autocomplete
+			<DimensionPicker
 				label="Label"
-				:showFooter="true"
+				v-model="config.label_column"
 				:options="discrete_dimensions"
-				:modelValue="config.label_column?.column_name"
-				@update:modelValue="config.label_column = $event"
 			/>
-			<Autocomplete
+			<MeasurePicker
 				label="Value"
-				:showFooter="true"
-				:options="props.measures"
-				:modelValue="config.value_column?.measure_name"
-				@update:modelValue="config.value_column = $event"
+				v-model="config.value_column"
+				:column-options="props.columnOptions"
 			/>
-
 			<FormControl
+				v-if="!config.show_inline_labels"
 				v-model="config.legend_position"
 				label="Legend Position"
 				type="select"
 				:options="[
-					{ label: 'Top', value: 'top' },
-					{ label: 'Bottom', value: 'bottom' },
-					{ label: 'Left', value: 'left' },
-					{ label: 'Right', value: 'right' },
+					{ label: __('Top'), value: 'top' },
+					{ label: __('Bottom'), value: 'bottom' },
+					{ label: __('Left'), value: 'left' },
+					{ label: __('Right'), value: 'right' },
 				]"
 			/>
+			<FormControl v-model="config.max_slices" label="Max Slices" type="number" min="1" />
+			<Toggle v-model="config.show_inline_labels" label="Inline Labels" />
 		</div>
 	</CollapsibleSection>
 </template>

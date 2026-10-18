@@ -3,6 +3,7 @@ import { Breadcrumbs, LoadingIndicator } from 'frappe-ui'
 import { ref, watchEffect } from 'vue'
 import DataTable from '../components/DataTable.vue'
 import useTableStore, { DataSourceTablePreview } from './tables'
+import { __ } from '../translation'
 
 const props = defineProps<{ data_source: string; table_name: string }>()
 
@@ -21,7 +22,7 @@ watchEffect(() => {
 	<header class="flex h-12 items-center justify-between border-b py-2.5 pl-5 pr-2">
 		<Breadcrumbs
 			:items="[
-				{ label: 'Data Sources', route: '/data-source' },
+				{ label: __('Data Sources'), route: '/data-source' },
 				{ label: props.data_source, route: `/data-source/${props.data_source}` },
 				{
 					label: props.table_name,
@@ -40,12 +41,10 @@ watchEffect(() => {
 					:columns="table.columns"
 					:rows="table.rows"
 				>
-					<template #footer>
-						<div class="flex flex-shrink-0 items-center gap-3 border-t p-2">
-							<p class="tnum text-sm text-gray-600">
-								Showing 100 rows from {{ table.table_name }} table
-							</p>
-						</div>
+					<template #footer-left>
+						<p class="tnum p-1 text-sm text-gray-600">
+							Showing only the first 100 rows
+						</p>
 					</template>
 				</DataTable>
 			</div>

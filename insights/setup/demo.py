@@ -8,12 +8,12 @@ import frappe
 
 from insights.api.data_sources import get_data_source_tables
 from insights.insights.doctype.insights_data_source_v3.insights_data_source_v3 import (
-    after_request,
-    before_request,
+    db_connections,
 )
 from insights.insights.doctype.insights_table_link_v3.insights_table_link_v3 import (
     InsightsTableLinkv3,
 )
+from insights.insights.doctype.insights_workbook.insights_workbook import import_workbook
 
 
 def update_progress(message, progress):
@@ -30,22 +30,21 @@ def update_progress(message, progress):
 
 
 class DemoDataFactory:
-    def __init__(self) -> None:
-        self.initialize()
-
     @staticmethod
     def run(force=False):
-        factory = DemoDataFactory()
-        if factory.demo_data_exists() and not force:
-            factory.create_table_links()
+        with db_connections():
+            factory = DemoDataFactory()
+            factory.initialize()
+            if factory.demo_data_exists() and not force:
+                update_progress("Done", 99)
+                return factory
+            update_progress("Downloading data...", 5)
+            factory.download_demo_data()
+            update_progress("Syncing tables...", 60)
+            factory.sync_tables()
             update_progress("Done", 99)
+            factory.create_sample_workbook()
             return factory
-        update_progress("Downloading data...", 5)
-        factory.download_demo_data()
-        update_progress("Syncing tables...", 60)
-        factory.sync_tables()
-        update_progress("Done", 99)
-        return factory
 
     def initialize(self):
         self.db_url = "https://drive.google.com/uc?export=download&id=1l43RqU0KWKr04fx54PLsrHpWqMijRKTa"
@@ -63,16 +62,29 @@ class DemoDataFactory:
             data_source = frappe.new_doc("Insights Data Source v3")
             data_source.name = "demo_data"
             data_source.title = "Demo Data"
+            data_source.status = "Active"
             data_source.database_type = "DuckDB"
             data_source.database_name = "insights_demo_data"
-            data_source.insert(ignore_permissions=True)
-            frappe.db.commit()
+            data_source.flags.ignore_permissions = True
+            data_source.db_insert()
 
         self.data_source = frappe.get_doc("Insights Data Source v3", "demo_data")
+        if self.data_source.database_type != "DuckDB":
+            self.data_source.db_set(
+                {
+                    "database_type": "DuckDB",
+                    "database_name": "insights_demo_data",
+                }
+            )
 
     def demo_data_exists(self):
         tables = get_data_source_tables(self.data_source.name)
-        return len(tables) == 8
+        tables_exists = len(tables) >= 8
+
+        links_count = frappe.db.count("Insights Table Link v3", {"data_source": self.data_source.name})
+        links_exists = links_count >= 8
+
+        return tables_exists and links_exists
 
     def download_demo_data(self):
         if frappe.flags.in_test or os.environ.get("CI"):
@@ -87,17 +99,13 @@ class DemoDataFactory:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
         except Exception as e:
-            frappe.log_error(
-                "Error downloading demo data. Please check your Internet connection."
-            )
+            frappe.log_error("Error downloading demo data. Please check your Internet connection.")
             update_progress("Error...", -1)
             raise e
 
     def sync_tables(self):
-        before_request()
         self.data_source.update_table_list()
         self.data_source.save(ignore_permissions=True)
-        after_request()
         self.create_table_links()
 
     def create_table_links(self):
@@ -151,9 +159,7 @@ class DemoDataFactory:
                 "right_column": "seller_id",
             },
         ]
-        frappe.db.delete(
-            "Insights Table Link v3", {"data_source": self.data_source.name}
-        )
+        frappe.db.delete("Insights Table Link v3", {"data_source": self.data_source.name})
         for link in table_links:
             InsightsTableLinkv3.create(
                 self.data_source.name,
@@ -162,3 +168,13 @@ class DemoDataFactory:
                 link["left_column"],
                 link["right_column"],
             )
+
+    def create_sample_workbook(self):
+        if frappe.db.exists("Insights Workbook", {"title": "Order Analysis"}):
+            return
+
+        fixture_path = frappe.get_app_path("insights", "setup")
+        with open(fixture_path + "/sample_workbook.json") as f:
+            sample_workbook = f.read()
+
+        import_workbook(frappe.parse_json(sample_workbook))

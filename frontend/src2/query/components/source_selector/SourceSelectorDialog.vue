@@ -1,14 +1,15 @@
 <script setup lang="tsx">
 import { DatabaseIcon, Table2Icon } from 'lucide-vue-next'
 import { computed, inject, ref } from 'vue'
+import TabbedSidebarLayout, { Tab, TabGroup } from '../../../components/TabbedSidebarLayout.vue'
 import useDataSourceStore from '../../../data_source/data_source'
 import { wheneverChanges } from '../../../helpers'
 import { QueryTableArgs, SourceArgs, TableArgs } from '../../../types/query.types'
 import { Workbook, workbookKey } from '../../../workbook/workbook'
 import { query_table, table } from '../../helpers'
 import DataSourceTableList from './DataSourceTableList.vue'
-import TabbedSidebarLayout, { Tab, TabGroup } from './TabbedSidebarLayout.vue'
 import WorkbookQueryList from './WorkbookQueryList.vue'
+import { __ } from '../../../translation'
 
 const emit = defineEmits({ select: (source: SourceArgs) => true })
 const props = defineProps<{ source?: SourceArgs }>()
@@ -21,7 +22,7 @@ const selectedTable = ref<TableArgs>(
 				type: 'table',
 				data_source: '',
 				table_name: '',
-		  }
+		  },
 )
 
 const dataSourceStore = useDataSourceStore()
@@ -45,21 +46,29 @@ wheneverChanges(
 			workbook: '',
 			query_name: '',
 		}
-	}
+	},
 )
 
 dataSourceStore.getSources().then(() => {
-	tabGroups.value[0].tabs = dataSourceStore.sources.map((source) => ({
-		label: source.name,
-		icon: DatabaseIcon,
-		component: () => (
-			<DataSourceTableList
-				v-model:selectedTable={selectedTable.value}
-				data_source={source.name}
-			/>
-		),
-	}))
+	tabGroups.value[0].tabs = dataSourceStore.sources
+		.map((source) => ({
+			label: source.title,
+			icon: DatabaseIcon,
+			component: () => (
+				<DataSourceTableList
+					v-model:selectedTable={selectedTable.value}
+					data_source={source.name}
+				/>
+			),
+		}))
+		.sort((a, b) => a.label.localeCompare(b.label))
+
 	activeTab.value = tabGroups.value[0].tabs[0]
+	if (props.source && props.source.table.type == 'table') {
+		const source_data_source = props.source.table.data_source
+		const tab = tabGroups.value[0].tabs.find((tab) => tab.label == source_data_source)
+		if (tab) activeTab.value = tab
+	}
 })
 
 const selectedQuery = ref<QueryTableArgs>(
@@ -69,7 +78,7 @@ const selectedQuery = ref<QueryTableArgs>(
 				type: 'query',
 				workbook: '',
 				query_name: '',
-		  }
+		  },
 )
 const workbook = inject<Workbook>(workbookKey)!
 if (workbook.doc.queries.length > 1) {
@@ -77,12 +86,15 @@ if (workbook.doc.queries.length > 1) {
 		groupLabel: 'Workbook',
 		tabs: [
 			{
-				label: 'Queries',
+				label: __('Queries'),
 				icon: Table2Icon,
 				component: () => <WorkbookQueryList v-model:selectedQuery={selectedQuery.value} />,
 			},
 		],
 	})
+	if (props.source && props.source.table.type == 'query') {
+		activeTab.value = tabGroups.value[1].tabs[0]
+	}
 }
 
 const confirmDisabled = computed(() => {
@@ -99,7 +111,7 @@ function onConfirm() {
 			  }
 			: {
 					table: table(selectedTable.value),
-			  }
+			  },
 	)
 	showDialog.value = false
 }
@@ -110,14 +122,14 @@ function onConfirm() {
 		<template #body>
 			<div class="relative flex pb-10" :style="{ height: 'calc(100vh - 12rem)' }">
 				<TabbedSidebarLayout
-					title="Pick Starting Data"
+					:title="__('Pick Starting Data')"
 					:tabs="tabGroups"
 					v-model:activeTab="activeTab"
 				/>
 				<div class="absolute bottom-3 right-3 flex gap-2">
-					<Button @click="showDialog = false"> Close </Button>
+					<Button @click="showDialog = false"> {{ __('Close') }} </Button>
 					<Button variant="solid" :disabled="confirmDisabled" @click="onConfirm">
-						Confirm
+						{{ __('Confirm') }}
 					</Button>
 				</div>
 			</div>

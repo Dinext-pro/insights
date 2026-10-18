@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { FileUploader, call } from 'frappe-ui'
+import { __ } from '../translation'
 import { FileUp } from 'lucide-vue-next'
 import { computed, reactive, ref } from 'vue'
 import DataTable from '../components/DataTable.vue'
@@ -18,18 +19,27 @@ const csvData = reactive({
 	totalRowCount: 0,
 })
 
-function uploadFileAndFetchData(file: File) {
+function uploadFile(file: File) {
 	fileUploaded.value = true
 	csvData.loading = true
 	csvData.file = file
-	return call('insights.api.get_csv_data', {
+	return call('insights.api.get_file_data', {
 		filename: file.name,
 	})
 		.then((data: any) => {
-			csvData.tablename = data.tablename
+			csvData.tablename = data.tablename || file.name.split('.')[0] || 'imported_table'
 			csvData.columns = data.columns
 			csvData.rows = data.rows
 			csvData.totalRowCount = data.total_rows
+		})
+		.catch((error: any) => {
+			createToast({
+				title: __('Upload Failed'),
+				message: error?.message || __('Failed to process uploaded file'),
+				variant: 'error',
+			})
+			fileUploaded.value = false
+			throw error
 		})
 		.finally(() => {
 			csvData.loading = false
@@ -47,18 +57,35 @@ function importCSVData() {
 	importing.value = true
 	return call('insights.api.import_csv_data', {
 		filename: csvData.file.name,
+		tablename: csvData.tablename,
 	})
 		.then(() => {
-			show.value = false
 			createToast({
-				title: 'Table Imported',
-				message: `Table '${csvData.tablename}' imported successfully`,
+				title: __('Table Imported'),
+				message: __(`Table '{0}' imported successfully`, csvData.tablename),
 				variant: 'success',
+			})
+		})
+		.catch((error: any) => {
+			createToast({
+				title: __('Import Failed'),
+				message: error?.message || __('Failed to import table'),
+				variant: 'error',
 			})
 		})
 		.finally(() => {
 			importing.value = false
+			show.value = false
 		})
+}
+
+function resetFile() {
+	fileUploaded.value = false
+	csvData.file = null
+	csvData.tablename = ''
+	csvData.columns = []
+	csvData.rows = []
+	csvData.totalRowCount = 0
 }
 </script>
 
@@ -66,15 +93,16 @@ function importCSVData() {
 	<Dialog
 		v-model="show"
 		:options="{
-			title: csvData.tablename ? `Import '${csvData.tablename}' Table` : 'Upload CSV File',
+			title: csvData.tablename ? __('Import Table') : __('Upload CSV/Excel/JSON File'),
 			size: fileUploaded ? '4xl' : '',
 		}"
 	>
 		<template #body-content>
 			<FileUploader
 				v-if="!fileUploaded"
-				:file-types="['.csv']"
-				@success="uploadFileAndFetchData"
+				:uploadArgs="{ private: true }"
+				:file-types="['.csv', '.xlsx', '.json', '.jsonl']"
+				@success="uploadFile"
 			>
 				<template #default="{ progress, uploading, openFileSelector }">
 					<div
@@ -88,7 +116,7 @@ function importCSVData() {
 						/>
 						<div class="text-center">
 							<p v-if="!uploading" class="text-sm font-medium text-gray-800">
-								Select a CSV file to upload
+								Select a CSV, Excel, or JSON file to upload
 							</p>
 							<p v-if="!uploading" class="mt-1 text-xs text-gray-600">
 								or drag and drop it here
@@ -107,27 +135,30 @@ function importCSVData() {
 				</template>
 			</FileUploader>
 
-			<div
-				v-else
-				class="relative flex h-[30rem] w-full flex-1 flex-col overflow-hidden rounded border bg-white"
-			>
-				<DataTable
-					:columns="csvData.columns"
-					:rows="csvData.rows"
-					:loading="csvData.loading"
+			<div v-else class="flex flex-col gap-4">
+				<div>
+					<FormControl class="w-fit" label="Table Name" v-model="csvData.tablename" />
+				</div>
+				<div
+					class="relative flex h-[30rem] w-full flex-col overflow-hidden rounded border bg-white"
 				>
-					<template #footer>
-						<div class="flex flex-shrink-0 items-center gap-3 border-t p-2">
-							<p class="tnum text-sm text-gray-600">
-								Showing {{ csvData.rows.length }} of
-								{{ csvData.totalRowCount }} rows
+					<DataTable
+						:columns="csvData.columns"
+						:rows="csvData.rows"
+						:loading="csvData.loading"
+					>
+						<template #footer-left>
+							<p class="tnum p-1 text-sm text-gray-600">
+								Showing {{ csvData.rows.length.toLocaleString() }} of
+								{{ csvData.totalRowCount.toLocaleString() }} rows
 							</p>
-						</div>
-					</template>
-				</DataTable>
+						</template>
+					</DataTable>
+				</div>
 			</div>
 			<div class="mt-4 flex justify-between pt-2">
 				<div class="ml-auto flex items-center space-x-2">
+					<Button :disabled="!fileUploaded" @click="resetFile"> Reset File </Button>
 					<Button
 						variant="solid"
 						:disabled="importDisabled"

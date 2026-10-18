@@ -1,18 +1,24 @@
 {
   "branches": [
-    "main"
+    "version-3"
   ],
   "plugins": [
     "@semantic-release/commit-analyzer",
     {
-      "preset": "angular",
-      "releaseRules": [
-        {
-          "breaking": true,
-          "release": false
-        }
-      ]
+      "preset": "conventionalcommits"
     },
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "presetConfig": {
+          "types": [
+            {"type": "feat", "section": "Features", "hidden": false},
+            {"type": "fix", "section": "Bug Fixes", "hidden": false}
+          ]
+        }
+      }
+    ],
     [
       "@semantic-release/exec",
       {

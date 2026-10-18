@@ -5,6 +5,7 @@ import { workbookKey } from '../../workbook/workbook'
 import { query_table, table } from '../helpers'
 import { Query } from '../query'
 import { useTableOptions } from './join_utils'
+import { __ } from '../../translation'
 
 const props = defineProps<{ union?: UnionArgs }>()
 const emit = defineEmits({
@@ -18,7 +19,7 @@ const union = reactive<UnionArgs>(
 		: {
 				table: table({}),
 				distinct: false,
-		  }
+		  },
 )
 const selectedTableOption = computed({
 	get() {
@@ -46,15 +47,7 @@ const selectedTableOption = computed({
 })
 
 const query = inject('query') as Query
-const data_source = computed(() => {
-	// allow only one data source joins for now
-	// TODO: support multiple data source joins if live connection is disabled
-	// if (!query.doc.use_live_connection) return undefined
-
-	const operations = query.getOperationsForExecution()
-	const source = operations.find((op) => op.type === 'source')
-	return source && source.table.type === 'table' ? source.table.data_source : ''
-})
+const data_source = computed(() => query.dataSource)
 
 const rightTable = computed(() => {
 	return union.table.type === 'table' ? union.table.table_name : ''
@@ -65,24 +58,26 @@ const tableOptions = useTableOptions({
 })
 
 const workbook = inject(workbookKey)!
-const linkedQueries = workbook.getLinkedQueries(query.doc.name)
-const queryTableOptions = workbook.doc.queries
-	.filter((q) => q.name !== query.doc.name && !linkedQueries.includes(q.name))
-	.map((q) => {
-		return {
-			workbook: workbook.doc.name,
-			query_name: q.name,
-			label: q.title,
-			value: q.name,
-			description: 'Query',
-		}
-	})
+const queryTableOptions = computed(() => {
+	const linkedQueries = workbook.getLinkedQueries(query.doc.name)
+	return workbook.doc.queries
+		.filter((q) => q.name !== query.doc.name && !linkedQueries.includes(q.name))
+		.map((q) => {
+			return {
+				workbook: workbook.doc.name,
+				query_name: q.name,
+				label: q.title,
+				value: q.name,
+				description: __('Query'),
+			}
+		})
+})
 
 const groupedTableOptions = computed(() => {
 	return [
 		{
 			group: 'Queries',
-			items: queryTableOptions,
+			items: queryTableOptions.value,
 		},
 		{
 			group: 'Tables',
@@ -117,7 +112,9 @@ function reset() {
 			<div class="rounded-lg bg-white px-4 pb-6 pt-5 sm:px-6">
 				<!-- Title & Close -->
 				<div class="flex items-center justify-between pb-4">
-					<h3 class="text-2xl font-semibold leading-6 text-gray-900">Append Rows</h3>
+					<h3 class="text-2xl font-semibold leading-6 text-gray-900">
+						{{ __('Append Rows') }}
+					</h3>
 					<Button variant="ghost" @click="showDialog = false" icon="x" size="md">
 					</Button>
 				</div>
@@ -125,9 +122,11 @@ function reset() {
 				<!-- Fields -->
 				<div class="flex w-full flex-col gap-3 overflow-auto p-0.5 text-base">
 					<div>
-						<label class="mb-1 block text-xs text-gray-600">Select Table</label>
+						<label class="mb-1 block text-xs text-gray-600">{{
+							__('Select Table')
+						}}</label>
 						<Autocomplete
-							placeholder="Table"
+							:placeholder="__('Table')"
 							v-model="selectedTableOption"
 							:loading="tableOptions.loading"
 							:options="groupedTableOptions"
@@ -137,12 +136,12 @@ function reset() {
 					<div>
 						<FormControl
 							type="select"
-							label="Drop Duplicates"
+							:label="__('Drop Duplicates')"
 							:modelValue="union.distinct ? 'true' : 'false'"
 							@update:modelValue="union.distinct = $event === 'true'"
 							:options="[
-								{ label: 'Yes', value: 'true' },
-								{ label: 'No', value: 'false' },
+								{ label: __('Yes'), value: 'true' },
+								{ label: __('No'), value: 'false' },
 							]"
 						/>
 					</div>
@@ -150,8 +149,13 @@ function reset() {
 
 				<!-- Actions -->
 				<div class="mt-4 flex justify-end gap-2">
-					<Button variant="outline" label="Cancel" @click="showDialog = false" />
-					<Button variant="solid" label="Confirm" :disabled="!isValid" @click="confirm" />
+					<Button variant="outline" :label="__('Cancel')" @click="showDialog = false" />
+					<Button
+						variant="solid"
+						:label="__('Confirm')"
+						:disabled="!isValid"
+						@click="confirm"
+					/>
 				</div>
 			</div>
 		</template>

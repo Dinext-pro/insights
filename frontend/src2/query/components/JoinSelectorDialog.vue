@@ -1,15 +1,22 @@
 <script setup lang="ts">
+import { Combobox, MultiSelect } from 'frappe-ui'
 import { Braces } from 'lucide-vue-next'
 import { computed, inject, reactive, watch } from 'vue'
 import useTableStore from '../../data_source/tables'
 import { wheneverChanges } from '../../helpers'
 import { joinTypes } from '../../helpers/constants'
-import { JoinArgs, JoinType } from '../../types/query.types'
+import { __ } from '../../translation'
+import { JoinArgs } from '../../types/query.types'
 import { workbookKey } from '../../workbook/workbook'
 import { column, expression, query_table, table } from '../helpers'
-import { getCachedQuery, Query } from '../query'
+import { Query } from '../query'
 import InlineExpression from './InlineExpression.vue'
-import { handleOldProps, useTableColumnOptions, useTableOptions } from './join_utils'
+import {
+	handleOldProps,
+	useQueryColumnOptions,
+	useTableColumnOptions,
+	useTableOptions,
+} from './join_utils'
 
 const props = defineProps<{ join?: JoinArgs }>()
 const emit = defineEmits({
@@ -32,9 +39,9 @@ const join = reactive<JoinArgs>(
 					right_column: column(''),
 				},
 				select_columns: [],
-		  }
+		  },
 )
-const selectedTableOption = computed({
+const selectedTable = computed({
 	get() {
 		if (join.table.type === 'table' && join.table.table_name) {
 			return `${join.table.data_source}.${join.table.table_name}`
@@ -43,14 +50,23 @@ const selectedTableOption = computed({
 			return join.table.query_name
 		}
 	},
-	set(option: any) {
-		if (option.data_source && option.table_name) {
+	set(value: string) {
+		const option = [...queryTableOptions.value, ...tableOptions.options].find(
+			(o) => o.value === value,
+		)
+		if (!option) return
+		if (
+			'data_source' in option &&
+			'table_name' in option &&
+			option.data_source &&
+			option.table_name
+		) {
 			join.table = table({
 				data_source: option.data_source,
 				table_name: option.table_name,
 			})
 		}
-		if (option.query_name) {
+		if ('query_name' in option && option.query_name) {
 			join.table = query_table({
 				workbook: option.workbook,
 				query_name: option.query_name,
@@ -60,18 +76,10 @@ const selectedTableOption = computed({
 })
 
 const query = inject('query') as Query
-const data_source = computed(() => {
-	// allow only one data source joins for now
-	// TODO: support multiple data source joins if live connection is disabled
-	// if (!query.doc.use_live_connection) return undefined
+const data_source = computed(() => query.dataSource)
 
-	const operations = query.getOperationsForExecution()
-	const source = operations.find((op) => op.type === 'source')
-	return source && source.table.type === 'table' ? source.table.data_source : ''
-})
-
-wheneverChanges(selectedTableOption, () => {
-	if (!selectedTableOption.value) return
+wheneverChanges(selectedTable, () => {
+	if (!selectedTable.value) return
 
 	// reset previous values if table is changed
 	join.select_columns = []
@@ -105,13 +113,12 @@ watch(
 		) {
 			autoMatchColumns()
 		}
-	}
+	},
 )
 
 const tableStore = useTableStore()
 async function autoMatchColumns() {
-	const selected_tables = query
-		.getOperationsForExecution()
+	const selected_tables = query.currentOperations
 		.filter((op) => op.type === 'source' || op.type === 'join')
 		.map((op) => {
 			if (op.type === 'source' && op.table.type === 'table') {
@@ -142,39 +149,41 @@ async function autoMatchColumns() {
 	}
 }
 
-const workbook = inject(workbookKey)!
-const linkedQueries = workbook.getLinkedQueries(query.doc.name)
-const queryTableOptions = workbook.doc.queries
-	.filter((q) => q.name !== query.doc.name && !linkedQueries.includes(q.name))
-	.map((q) => {
-		return {
-			workbook: workbook.doc.name,
-			query_name: q.name,
-			label: q.title,
-			value: q.name,
-			description: 'Query',
-		}
-	})
-
+const workbook = inject(workbookKey, null)
+const queryTableOptions = computed(() => {
+	if (!workbook) return []
+	const linkedQueries = workbook.getLinkedQueries(query.doc.name)
+	return workbook.doc.queries
+		.filter((q) => q.name !== query.doc.name && !linkedQueries.includes(q.name))
+		.map((q) => {
+			return {
+				workbook: workbook.doc.name,
+				query_name: q.name,
+				label: q.title,
+				value: q.name,
+				description: __('Query'),
+			}
+		})
+})
 const groupedTableOptions = computed(() => {
 	return [
 		{
 			group: 'Queries',
-			items: queryTableOptions,
+			options: queryTableOptions.value,
 		},
 		{
 			group: 'Tables',
-			items: tableOptions.options,
+			options: tableOptions.options,
 		},
 	]
 })
 
-const queryTableColumnOptions = computed(() => {
-	if (join.table.type !== 'query') return []
-	const query = getCachedQuery(join.table.query_name)
-	if (!query) return []
-	return query.result.columnOptions
+const rightQueryName = computed(() => {
+	return join.table.type === 'query' ? join.table.query_name : ''
 })
+
+// get options by queryName
+const queryTableColumnOptions = useQueryColumnOptions(rightQueryName)
 
 const showJoinConditionEditor = computed(() => 'join_expression' in join.join_condition)
 function toggleJoinConditionEditor() {
@@ -238,32 +247,28 @@ function reset() {
 			<div class="rounded-lg bg-white px-4 pb-6 pt-5 sm:px-6">
 				<!-- Title & Close -->
 				<div class="flex items-center justify-between pb-4">
-					<h3 class="text-2xl font-semibold leading-6 text-gray-900">Join Table</h3>
+					<h3 class="text-2xl font-semibold leading-6 text-gray-900">
+						{{ __('Join Table') }}
+					</h3>
 					<Button variant="ghost" @click="showDialog = false" icon="x" size="md">
 					</Button>
 				</div>
 
 				<!-- Fields -->
 				<div class="flex w-full flex-col gap-3 overflow-auto p-0.5 text-base">
-					<div>
-						<label class="mb-1 block text-xs text-gray-600">Select Table to Join</label>
-						<Autocomplete
-							placeholder="Table"
-							v-model="selectedTableOption"
+					<div class="flex flex-col gap-1.5">
+						<label class="block text-xs text-ink-gray-5">{{ __('Right Table') }}</label>
+						<Combobox
+							:placeholder="__('Table')"
+							:open-on-focus="true"
+							v-model="selectedTable"
 							:loading="tableOptions.loading"
 							:options="groupedTableOptions"
-							@update:query="tableOptions.searchText = $event"
+							@input="tableOptions.searchText = $event"
 						/>
 					</div>
 					<div>
-						<label class="mb-1 block text-xs text-gray-600">
-							{{
-								showJoinConditionEditor
-									? 'Custom Join Condition'
-									: 'Select Matching Columns'
-							}}
-						</label>
-						<div class="flex gap-2">
+						<div class="flex items-end gap-2">
 							<template
 								v-if="
 									'left_column' in join.join_condition &&
@@ -271,55 +276,64 @@ function reset() {
 								"
 							>
 								<div class="flex-1">
-									<Autocomplete
-										placeholder="Column"
+									<label class="mb-1 block text-xs text-gray-600">{{
+										__('Left Column')
+									}}</label>
+									<Combobox
+										:placeholder="__('Column')"
 										:options="query.result.columnOptions"
 										:modelValue="join.join_condition.left_column.column_name"
 										@update:modelValue="
-											join.join_condition.left_column.column_name =
-												$event?.value
+											join.join_condition.left_column.column_name = $event
 										"
 									/>
 								</div>
-								<div class="flex flex-shrink-0 items-center font-mono">=</div>
+								<div class="flex h-7 flex-shrink-0 items-center font-mono">=</div>
 								<div class="flex-1">
-									<Autocomplete
-										placeholder="Column"
-										:loading="rightTableColumnOptions.loading"
+									<label class="mb-1 block text-xs text-gray-600">{{
+										__('Right Column')
+									}}</label>
+									<Combobox
+										:placeholder="__('Column')"
+										:loading="
+											rightTableColumnOptions.loading ||
+											queryTableColumnOptions.loading
+										"
 										:options="[
 											...rightTableColumnOptions.options,
-											...queryTableColumnOptions,
+											...queryTableColumnOptions.options,
 										]"
 										:modelValue="join.join_condition.right_column.column_name"
 										@update:modelValue="
-											join.join_condition.right_column.column_name =
-												$event?.value
+											join.join_condition.right_column.column_name = $event
 										"
 									/>
 								</div>
 							</template>
 							<template v-else-if="'join_expression' in join.join_condition">
-								<InlineExpression
-									v-model="join.join_condition.join_expression"
-									placeholder="Example: (t1.column_name = t2.column_name) & (t1.column_name > 10)"
-								/>
+								<div class="flex-1">
+									<label class="mb-1 block text-xs text-gray-600"
+										>{{ __('Custom Join Condition') }}
+									</label>
+									<InlineExpression
+										v-model="join.join_condition.join_expression"
+										placeholder="Example: (t1.column_name = t2.column_name) & (t1.column_name > 10)"
+									/>
+								</div>
 							</template>
 							<div class="flex flex-shrink-0 items-start">
-								<Tooltip text="Custom Join Condition" :hover-delay="0.5">
-									<Button @click="toggleJoinConditionEditor">
-										<template #icon>
-											<Braces
-												class="h-4 w-4 text-gray-700"
-												stroke-width="1.5"
-											/>
-										</template>
-									</Button>
-								</Tooltip>
+								<Button @click="toggleJoinConditionEditor">
+									<template #icon>
+										<Braces class="h-4 w-4 text-gray-700" stroke-width="1.5" />
+									</template>
+								</Button>
 							</div>
 						</div>
 					</div>
 					<div>
-						<label class="mb-1 block text-xs text-gray-600">Select Join Type</label>
+						<label class="mb-1 block text-xs text-gray-600">{{
+							__('Select Join Type')
+						}}</label>
 						<div class="flex gap-2">
 							<div
 								v-for="joinType in joinTypes"
@@ -345,20 +359,21 @@ function reset() {
 						</div>
 					</div>
 					<div>
-						<label class="mb-1 block text-xs text-gray-600"
-							>Select Columns to Add</label
-						>
-						<Autocomplete
-							:multiple="true"
-							placeholder="Columns"
-							:loading="rightTableColumnOptions.loading"
+						<label class="mb-1 block text-xs text-gray-600">{{
+							__('Select Columns to Add')
+						}}</label>
+						<MultiSelect
+							:placeholder="__('Columns')"
+							:loading="
+								rightTableColumnOptions.loading || queryTableColumnOptions.loading
+							"
 							:options="[
 								...rightTableColumnOptions.options,
-								...queryTableColumnOptions,
+								...queryTableColumnOptions.options,
 							]"
 							:modelValue="join.select_columns?.map((c) => c.column_name)"
 							@update:modelValue="
-								join.select_columns = $event?.map((o: any) => column(o.value)) || []
+								join.select_columns = $event?.map((o: any) => column(o)) || []
 							"
 						/>
 					</div>
@@ -366,8 +381,13 @@ function reset() {
 
 				<!-- Actions -->
 				<div class="mt-4 flex justify-end gap-2">
-					<Button variant="outline" label="Cancel" @click="showDialog = false" />
-					<Button variant="solid" label="Confirm" :disabled="!isValid" @click="confirm" />
+					<Button variant="outline" :label="__('Cancel')" @click="showDialog = false" />
+					<Button
+						variant="solid"
+						:label="__('Confirm')"
+						:disabled="!isValid"
+						@click="confirm"
+					/>
 				</div>
 			</div>
 		</template>

@@ -1,69 +1,83 @@
 <script setup lang="ts">
-import { inject, ref } from 'vue'
-import DataTable from '../../components/DataTable.vue'
-import { Query } from '../../query/query'
-import { QueryResultColumn, QueryResultRow } from '../../types/query.types'
+import { Calendar, Check } from 'lucide-vue-next'
+import { h, inject, watchEffect } from 'vue'
+import { FIELDTYPES, getGranularityOptions } from '../../helpers/constants'
+import QueryDataTable from '../../query/components/QueryDataTable.vue'
+import { column } from '../../query/helpers'
+import { SortDirection } from '../../types/query.types'
 import { Chart } from '../chart'
-import { getDrillDownQuery } from '../helpers'
-import ChartBuilderTableColumn from './ChartBuilderTableColumn.vue'
+import { getGranularity } from '../helpers'
 
 const chart = inject('chart') as Chart
 
-const showDrillDownResults = ref(false)
-const drillDownQuery = ref<Query | null>(null)
-function onCellClick(row: QueryResultRow, col: QueryResultColumn) {
-	const query = getDrillDownQuery(chart, row, col)
-	if (query) {
-		drillDownQuery.value = query
-		drillDownQuery.value.execute()
-		showDrillDownResults.value = true
+watchEffect(() => {
+	if (!chart.doc.config.order_by) {
+		chart.doc.config.order_by = []
 	}
+})
+
+function onSortChange(column_name: string, sort_order: SortDirection) {
+	const existingOrder = chart.doc.config.order_by.find(
+		(order) => order.column.column_name === column_name,
+	)
+	if (existingOrder) {
+		if (sort_order) {
+			existingOrder.direction = sort_order
+		} else {
+			chart.doc.config.order_by = chart.doc.config.order_by.filter(
+				(order) => order.column.column_name !== column_name,
+			)
+		}
+	} else {
+		if (!sort_order) return
+		chart.doc.config.order_by.push({
+			column: column(column_name),
+			direction: sort_order,
+		})
+	}
+}
+
+function getDateGranularityOptions(column_name: string, column_type: string) {
+	return getGranularityOptions(column_type).map((option) => {
+		const _option = { ...option } as any
+		_option.onClick = () => chart.updateGranularity(column_name, option.value)
+		_option.icon =
+			option.label.toLowerCase() === getGranularity(column_name, chart.doc.config)
+				? h(Check, {
+						class: 'h-4 w-4 text-gray-700',
+						strokeWidth: 1.5,
+				  })
+				: h('div', { class: 'h-4 w-4' })
+
+		return _option
+	})
 }
 </script>
 
 <template>
-	<div v-if="chart.doc.chart_type != 'Table'" class="flex h-[18rem] flex-col divide-y border">
-		<DataTable
-			class="bg-white"
-			:columns="chart.dataQuery.result.columns"
-			:rows="chart.dataQuery.result.formattedRows"
-			@cell-dbl-click="onCellClick"
+	<div
+		v-if="chart.doc.chart_type != 'Table'"
+		class="flex h-[18rem] flex-col overflow-hidden rounded border"
+	>
+		<QueryDataTable
+			:query="chart.dataQuery"
+			:enable-alerts="true"
+			:enable-sort="true"
+			:enable-drill-down="true"
+			:on-sort-change="onSortChange"
 		>
-			<template #column-header="{ column }">
-				<ChartBuilderTableColumn :chart="chart" :column="column" />
-			</template>
-		</DataTable>
-
-		<Dialog
-			v-model="showDrillDownResults"
-			:options="{
-				title: 'Drill Down Results',
-				size: '5xl',
-			}"
-			@close="drillDownQuery = null"
-		>
-			<template #body-content>
-				<div
-					v-if="drillDownQuery"
-					class="relative flex h-[35rem] w-full flex-1 flex-col overflow-hidden rounded border bg-white"
+			<template #header-suffix="{ column }">
+				<Dropdown
+					v-if="FIELDTYPES.DATE.includes(column.type)"
+					:options="getDateGranularityOptions(column.name, column.type)"
 				>
-					<DataTable
-						:loading="drillDownQuery.executing"
-						:columns="drillDownQuery.result.columns"
-						:rows="drillDownQuery.result.rows"
-						:show-filter-row="true"
-					>
-						<template #footer>
-							<div class="flex flex-shrink-0 items-center gap-3 border-t p-2">
-								<p class="tnum text-sm text-gray-600">
-									Showing {{ drillDownQuery.result.rows.length }} of
-									{{ drillDownQuery.result.totalRowCount }} rows
-								</p>
-							</div>
+					<Button variant="ghost" class="rounded-none">
+						<template #icon>
+							<Calendar class="h-3.5 w-3.5 text-gray-700" stroke-width="1.5" />
 						</template>
-					</DataTable>
-				</div>
+					</Button>
+				</Dropdown>
 			</template>
-		</Dialog>
+		</QueryDataTable>
 	</div>
 </template>

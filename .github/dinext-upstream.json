@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "upstream": "frappe/insights",
+  "selected_tag": "v3.15.0",
+  "selected_commit": "1f08dfadbd2781756a76f79741528b8cff2af730",
+  "integration_branch": "main/main",
+  "prior_dinext_commit": "fd3e1ddbd809a774b145f0eaadc62aae6da0a007",
+  "prior_vendor_snapshot": "8fa66e4ea25bf92df3ebc26849b3badd00c90daf",
+  "customizations": "docs/dinext-source-upgrade.md",
+  "automatic_sync": false
+}

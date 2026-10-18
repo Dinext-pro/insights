@@ -1,50 +1,71 @@
 <script setup lang="ts">
 import { useMagicKeys, whenever } from '@vueuse/core'
-import { Badge } from 'frappe-ui'
-import { AlertOctagon, ArrowLeft } from 'lucide-vue-next'
-import { computed, provide, watchEffect } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import ContentEditable from '../components/ContentEditable.vue'
-import Navbar from '../components/Navbar.vue'
+import { AlertOctagon } from 'lucide-vue-next'
+import { provide, watch, watchEffect } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import LoadingOverlay from '../components/LoadingOverlay.vue'
+import { waitUntil } from '../helpers'
 import useWorkbook, { workbookKey } from './workbook'
-import WorkbookNavbarActions from './WorkbookNavbarActions.vue'
+import WorkbookNavbar from './WorkbookNavbar.vue'
 import WorkbookSidebar from './WorkbookSidebar.vue'
-import WorkbookTabSwitcher from './WorkbookTabSwitcher.vue'
+import useChart from '../charts/chart'
+import useDashboard from '../dashboard/dashboard'
 
 defineOptions({ inheritAttrs: false })
 
-const props = defineProps<{ name: string }>()
+const props = defineProps<{ workbook_name: string }>()
+
+const workbook = useWorkbook(props.workbook_name)
+provide(workbookKey, workbook)
+window.workbook = workbook
+
+await waitUntil(() => workbook.isloaded)
+
+if (workbook.doc.queries.length === 0) {
+	workbook.addQuery()
+}
+
 const router = useRouter()
 const route = useRoute()
+if (route.name === 'Workbook' && workbook.doc.queries.length) {
+	const query = workbook.doc.queries[0]
+	router.replace(`/workbook/${workbook.doc.name}/query/${query.name}`)
+}
 
-const workbook = useWorkbook(props.name)
-provide(workbookKey, workbook)
+// when we navigate from query to chart of the same query, refresh the chart
+watch(
+	() => ({ name: route.name, params: route.params }),
+	(newRoute, oldRoute) => {
+		if (newRoute.name === 'WorkbookChart' && oldRoute.name === 'WorkbookQuery') {
+			const chart = useChart(newRoute.params.chart_name as string)
+			if (chart.doc.query === oldRoute.params.query_name) {
+				chart.refresh(true)
+			}
+		}
+	},
+)
 
 const keys = useMagicKeys()
 const cmdS = keys['Meta+S']
 whenever(cmdS, () => workbook.save())
 
-if (workbook.islocal && workbook.doc.queries.length === 0) {
-	workbook.addQuery()
-}
-
-const tabExists = computed(() => {
-	const tabType = route.name?.toString().replace('Workbook', '').toLowerCase()
-	const tabIndex = parseInt(route.params.index.toString())
-	return (
-		(tabType === 'query' && workbook.doc.queries[tabIndex]) ||
-		(tabType === 'chart' && workbook.doc.charts[tabIndex]) ||
-		(tabType === 'dashboard' && workbook.doc.dashboards[tabIndex])
-	)
-})
-
-onBeforeRouteLeave(() => {
-	if (workbook.islocal) {
-		const message = 'Do you really want to leave? you have unsaved changes!'
-		if (!window.confirm(message)) {
-			return false
-		}
+const cmdV = keys['Meta+V']
+whenever(cmdV, () => {
+	if (!navigator.clipboard) {
+		return
 	}
+	navigator.clipboard.readText().then((text) => {
+		try {
+			const json = JSON.parse(text)
+			if (json.type === 'Query') {
+				workbook.importQuery(json)
+			} else if (json.type === 'Chart') {
+				workbook.importChart(json)
+			}
+		} catch (e) {
+			console.error(e)
+		}
+	})
 })
 
 watchEffect(() => {
@@ -53,43 +74,29 @@ watchEffect(() => {
 </script>
 
 <template>
-	<div class="flex h-full w-full flex-col">
-		<Navbar>
-			<template #center>
-				<div class="relative flex gap-3">
-					<ContentEditable
-						class="rounded-sm font-medium !text-gray-800 focus:ring-2 focus:ring-gray-700 focus:ring-offset-4"
-						v-model="workbook.doc.title"
-						placeholder="Untitled Workbook"
-					></ContentEditable>
-					<Badge
-						v-if="workbook.islocal || workbook.isdirty"
-						class="absolute -right-[4.5rem]"
-						size="sm"
-						theme="orange"
-					>
-						Unsaved
-					</Badge>
-				</div>
-			</template>
-			<template #right>
-				<WorkbookNavbarActions />
-			</template>
-		</Navbar>
+	<div class="flex h-full w-full flex-col gap-0.5">
+		<LoadingOverlay v-if="!workbook.isloaded" />
+		<WorkbookNavbar />
 		<div
-			class="relative flex w-full flex-1 overflow-hidden bg-gray-50"
+			class="relative flex w-full flex-1 overflow-hidden"
 			:class="workbook.showSidebar ? 'flex-row' : 'flex-col'"
 		>
-			<WorkbookSidebar v-if="workbook.showSidebar" />
-			<WorkbookTabSwitcher v-else />
-			<RouterView :key="route.fullPath" v-slot="{ Component }">
-				<component v-if="tabExists" :is="Component" />
-				<div v-else class="flex flex-1 items-center justify-center">
+			<WorkbookSidebar />
+			<RouterView v-if="workbook.isloaded" :key="route.fullPath" v-slot="{ Component }">
+				<component :is="Component" />
+				<div v-if="false" class="flex flex-1 items-center justify-center">
 					<div class="flex flex-col items-center gap-4">
 						<AlertOctagon class="h-16 w-16 text-gray-400" stroke-width="1" />
-						<p class="text-center text-lg text-gray-500">
-							Looks like this tab doesn't exist <br />
+						<p
+							v-if="workbook.doc.queries.length"
+							class="text-center text-lg leading-4 text-gray-500"
+						>
+							This tab doesn't exist <br />
 							Try switching to another tab
+						</p>
+						<p v-else class="text-center text-lg leading-5 text-gray-500">
+							You haven't added any queries yet <br />
+							Click on the "+" button to add a new query
 						</p>
 					</div>
 				</div>

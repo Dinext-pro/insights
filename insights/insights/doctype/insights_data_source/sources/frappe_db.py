@@ -5,19 +5,15 @@
 import frappe
 from frappe import _dict
 from sqlalchemy import column as Column
-from sqlalchemy import table as Table
+from sqlalchemy import table as Table  # nosemgrep - the "table" assigned to below is a local, not this import
 from sqlalchemy import text
 from sqlalchemy.engine.base import Connection
 
 from insights.insights.query_builders.sql_builder import SQLQueryBuilder
 
-from .base_database import (
-    BaseDatabase,
-    DatabaseCredentialsError,
-    DatabaseParallelConnectionError,
-)
+from .base_database import DatabaseCredentialsError, DatabaseParallelConnectionError
 from .mariadb import MARIADB_TO_GENERIC_TYPES, MariaDB
-from .utils import create_insights_table, get_sqlalchemy_engine
+from .utils import CONNECT_TIMEOUT, create_insights_table, get_sqlalchemy_engine
 
 
 class FrappeTableFactory:
@@ -56,9 +52,7 @@ class FrappeTableFactory:
         for [table_name, column_name, data_type, _] in columns:
             if not table_name.startswith("tab"):
                 continue
-            schema.setdefault(table_name, []).append(
-                self.get_column(column_name, data_type)
-            )
+            schema.setdefault(table_name, []).append(self.get_column(column_name, data_type))
         return schema
 
     def get_table(self, table_name):
@@ -74,7 +68,7 @@ class FrappeTableFactory:
         return _dict(
             {
                 "column": column_name,
-                "label": frappe.unscrub(column_name),
+                "label": frappe.unscrub(column_name) or column_name,
                 "type": MARIADB_TO_GENERIC_TYPES.get(column_type, "String"),
             }
         )
@@ -111,9 +105,7 @@ class FrappeTableFactory:
                 CustomField.options,
                 CustomField.dt.as_("parent"),
             )
-            .where(
-                (CustomField.fieldtype == "Link") | (CustomField.fieldtype == "Table")
-            )
+            .where((CustomField.fieldtype == "Link") | (CustomField.fieldtype == "Table"))
             .get_sql()
         )
         query = text(query)
@@ -162,10 +154,7 @@ class FrappeTableFactory:
                 DocField.options,
                 DocType.issingle,
             )
-            .where(
-                (DocField.fieldtype == "Dynamic Link")
-                & (DocType.name == DocField.parent)
-            )
+            .where((DocField.fieldtype == "Dynamic Link") & (DocType.name == DocField.parent))
             .get_sql()
         )
 
@@ -178,10 +167,7 @@ class FrappeTableFactory:
                 CustomField.options,
                 DocType.issingle,
             )
-            .where(
-                (CustomField.fieldtype == "Dynamic Link")
-                & (DocType.name == CustomField.dt)
-            )
+            .where((CustomField.fieldtype == "Dynamic Link") & (DocType.name == CustomField.dt))
             .get_sql()
         )
 
@@ -213,10 +199,35 @@ class FrappeTableFactory:
         return dynamic_link_map
 
 
+def get_site_db_ssl_params():
+    """SSL settings for the site database, as the framework resolves them.
+
+    The site database has no connection fields in the form, so the site config
+    is the only source. This mirrors frappe.database.mariadb.
+
+    frappe.db.get_connection_settings() cannot be reused as is. It carries a
+    converter map, and other keys, built for the driver the framework itself
+    connects with, which is not always the one used here.
+    """
+    if not frappe.conf.db_ssl_ca:
+        return {}
+
+    # pymysql rebuilds its ssl options from scratch when ssl_verify_cert is set,
+    # which drops the CA. Sending the CA alone already means "verify".
+    params = {
+        "ssl_ca": frappe.conf.db_ssl_ca,
+        # a string, so that "do not check the hostname" survives the query
+        # string, where a falsy value would be dropped
+        "ssl_check_hostname": str(bool(frappe.conf.db_ssl_check_hostname)).lower(),
+    }
+    if frappe.conf.db_ssl_cert and frappe.conf.db_ssl_key:
+        params["ssl_cert"] = frappe.conf.db_ssl_cert
+        params["ssl_key"] = frappe.conf.db_ssl_key
+    return params
+
+
 class FrappeDB(MariaDB):
-    def __init__(
-        self, data_source, host, port, username, password, database_name, use_ssl, **_
-    ):
+    def __init__(self, data_source, host, port, username, password, database_name, use_ssl, **_):
         self.data_source = data_source
         self.engine = get_sqlalchemy_engine(
             dialect="mysql",
@@ -227,18 +238,19 @@ class FrappeDB(MariaDB):
             host=host,
             port=port,
             ssl=use_ssl,
-            ssl_verify_cert=True,
+            ssl_verify_cert=use_ssl,
             charset="utf8mb4",
             use_unicode=True,
-            connect_args={"connect_timeout": 1, "read_timeout": 1, "write_timeout": 1},
+            # no read or write timeout: a chart query may well run longer than
+            # the connect timeout, and cutting a read mid packet leaves the
+            # connection out of step
+            connect_args={"connect_timeout": CONNECT_TIMEOUT},
         )
         self.query_builder: SQLQueryBuilder = SQLQueryBuilder(self.engine)
         self.table_factory: FrappeTableFactory = FrappeTableFactory(data_source)
 
     def test_connection(self, log_errors=True):
-        return self.execute_query(
-            "select name from tabDocType limit 1", pluck=True, log_errors=log_errors
-        )
+        return self.execute_query("select name from tabDocType limit 1", pluck=True, log_errors=log_errors)
 
     def handle_db_connection_error(self, e):
         if "Access denied" in str(e):
@@ -253,12 +265,8 @@ class FrappeDB(MariaDB):
             self.table_factory.sync_tables(connection, tables, force)
 
     def get_table_preview(self, table, limit=100):
-        data = self.execute_query(
-            f"""select * from `{table}` limit {limit}""", cached=True
-        )
-        length = self.execute_query(f"""select count(*) from `{table}`""", cached=True)[
-            0
-        ][0]
+        data = self.execute_query(f"""select * from `{table}` limit {limit}""", cached=True)
+        length = self.execute_query(f"""select count(*) from `{table}`""", cached=True)[0][0]
         return {
             "data": data or [],
             "length": length or 0,
@@ -281,21 +289,77 @@ class FrappeDB(MariaDB):
 class SiteDB(FrappeDB):
     def __init__(self, data_source):
         self.data_source = data_source
-        self.engine = get_sqlalchemy_engine(
-            dialect="mysql",
-            driver="pymysql",
-            username=frappe.conf.db_name,
-            password=frappe.conf.db_password,
-            database=frappe.conf.db_name,
-            host=frappe.conf.db_host or "127.0.0.1",
-            port=frappe.conf.db_port or "3306",
-            ssl=False,
-            ssl_verify_cert=True,
-            charset="utf8mb4",
-            use_unicode=True,
-        )
+        self.engine = self._get_database_engine()
         self.query_builder: SQLQueryBuilder = SQLQueryBuilder(self.engine)
         self.table_factory: FrappeTableFactory = FrappeTableFactory(data_source)
+
+    def _get_database_engine(self):
+        """Get database engine, trying replica first if enabled, then falling back to primary"""
+        if frappe.conf.read_from_replica:
+            try:
+                credentials = self.get_replica_credentials()
+                return self.create_engine(credentials)
+            except Exception:
+                # Fallback to primary if replica fails
+                pass
+
+        credentials = self.get_primary_credentials()
+        return self.create_engine(credentials)
+
+    def get_replica_credentials(self):
+        """Get replica database credentials"""
+        primary_config = self.get_primary_credentials()
+
+        if frappe.conf.replica_db_name:
+            primary_config["database"] = frappe.conf.replica_db_name
+        if frappe.conf.replica_db_port:
+            primary_config["port"] = frappe.conf.replica_db_port
+        if frappe.conf.replica_host:
+            primary_config["host"] = frappe.conf.replica_host
+            # the primary's socket does not reach the replica
+            primary_config["socket"] = None
+
+        if frappe.conf.different_credentials_for_replica:
+            primary_config["username"] = (
+                frappe.conf.replica_db_user or frappe.conf.replica_db_name or primary_config["username"]
+            )
+            primary_config["password"] = frappe.conf.replica_db_password or primary_config["password"]
+
+        return primary_config
+
+    def get_primary_credentials(self):
+        """Read back what the framework itself connected with.
+
+        Reading the live connection, rather than resolving the site config a
+        second time, keeps the two in step across framework versions. v15
+        connects as db_name, later versions prefer db_user, and a site may be
+        reached over a socket rather than a host and port.
+        """
+        db = frappe.local.db
+        return {
+            "username": db.user,
+            "password": db.password,
+            "database": db.cur_db_name,
+            "host": db.host or "127.0.0.1",
+            "port": db.port or "3306",
+            "socket": db.socket,
+        }
+
+    def create_engine(self, credentials):
+        """Create SQLAlchemy engine with given credentials"""
+        return get_sqlalchemy_engine(
+            dialect="mysql",
+            driver="pymysql",
+            username=credentials["username"],
+            password=credentials["password"],
+            database=credentials["database"],
+            host=credentials["host"],
+            port=credentials["port"],
+            unix_socket=credentials.get("socket"),
+            charset="utf8mb4",
+            use_unicode=True,
+            **get_site_db_ssl_params(),
+        )
 
 
 from insights.cache_utils import get_or_set_cache, make_digest

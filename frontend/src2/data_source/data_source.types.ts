@@ -1,10 +1,13 @@
 
+export type DatabaseType = 'MariaDB' | 'PostgreSQL' | 'SQLite' | 'DuckDB' | 'ClickHouse'
 export type DataSourceListItem = {
 	title: string
 	name: string
 	owner: string
 	status: 'Active' | 'Inactive'
-	database_type: 'MariaDB' | 'PostgreSQL' | 'SQLite' | 'DuckDB'
+	database_type: DatabaseType
+	is_frappe_db: boolean
+	is_site_db: boolean
 	creation: string
 	modified: string
 	created_from_now: string
@@ -13,7 +16,7 @@ export type DataSourceListItem = {
 
 type BaseDataSource = {
 	title: string
-	database_type: 'MariaDB' | 'PostgreSQL' | 'SQLite' | 'DuckDB'
+	database_type: DatabaseType
 	status?: 'Active' | 'Inactive'
 }
 
@@ -25,10 +28,23 @@ export type MariaDBDataSource = BaseDataSource & {
 	username: string
 	password: string
 	use_ssl: boolean
+	ssl_ca?: string
 }
 
 export type PostgreSQLDataSource = BaseDataSource & {
 	database_type: 'PostgreSQL'
+	host: string
+	port: number
+	database_name: string
+	schema: string
+	username: string
+	password: string
+	use_ssl: boolean
+	ssl_ca?: string
+}
+
+export type ClickHouseDataSource = BaseDataSource & {
+	database_type: 'ClickHouse'
 	host: string
 	port: number
 	database_name: string
@@ -37,4 +53,9 @@ export type PostgreSQLDataSource = BaseDataSource & {
 	use_ssl: boolean
 }
 
-export type DataSource = MariaDBDataSource | PostgreSQLDataSource
+export type DuckDBDataSource = BaseDataSource & {
+	database_type: 'DuckDB'
+	database_name: string
+}
+
+export type DataSource = MariaDBDataSource | PostgreSQLDataSource | DuckDBDataSource | ClickHouseDataSource

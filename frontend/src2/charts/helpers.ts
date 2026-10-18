@@ -1,18 +1,40 @@
 import { graphic } from 'echarts/core'
-import { copy, ellipsis, formatNumber, getShortNumber, getUniqueId } from '../helpers'
-import { FIELDTYPES } from '../helpers/constants'
-import { column, getFormattedDate } from '../query/helpers'
-import useQuery from '../query/query'
+import { ellipsis, formatNumber, getShortNumber, toTitleCase } from '../helpers'
+import { FIELDTYPES, isCalendarDateType } from '../helpers/constants'
+import { getFormattedDate } from '../query/helpers'
 import {
+	AXIS_CHARTS,
 	AxisChartConfig,
 	BarChartConfig,
-	DountChartConfig,
+	BubbleChartConfig,
+	ChartConfig,
+	DonutChartConfig,
+	FunnelChartConfig,
 	LineChartConfig,
+	MapChartConfig,
+	ReferenceLine,
+	SankeyChartConfig,
+	Series,
 	SeriesLine,
+	XAxis,
 } from '../types/chart.types'
-import { ColumnDataType, FilterRule, QueryResultColumn, QueryResultRow } from '../types/query.types'
-import { Chart } from './chart'
+import { QueryResult, QueryResultColumn, QueryResultRow } from '../types/query.types'
 import { getColors } from './colors'
+
+interface GeoJSONFeature {
+	type: string
+	id?: string
+	properties?: {
+		NAME_2?: string
+		[key: string]: any
+	}
+	geometry: any
+}
+
+interface GeoJSONData {
+	type: string
+	features: GeoJSONFeature[]
+}
 
 // eslint-disable-next-line no-unused-vars
 export function guessChart(columns: QueryResultColumn[], rows: QueryResultRow[]) {
@@ -31,83 +53,131 @@ export function guessChart(columns: QueryResultColumn[], rows: QueryResultRow[])
 	if (discreteDimensions.length > 1 && measures.length) return 'table'
 }
 
-export function getLineChartOptions(chart: Chart) {
-	const _config = chart.doc.config as LineChartConfig
-	const _columns = chart.dataQuery.result.columns
-	const _rows = chart.dataQuery.result.rows
+export function getAxisChartRowOrder(rows: any[], xAxisConfig: any, reversed = false) {
+	let indices = rows.map((_, i) => i)
+	const xAxisIsDate = isCalendarDateType(xAxisConfig.dimension?.data_type)
 
-	const number_columns = _columns.filter((c) => FIELDTYPES.NUMBER.includes(c.type))
-	const show_legend = number_columns.length > 1
+	if (xAxisIsDate) {
+		indices.sort((a, b) => {
+			const a_date = new Date(rows[a][xAxisConfig.dimension.dimension_name])
+			const b_date = new Date(rows[b][xAxisConfig.dimension.dimension_name])
+			return a_date.getTime() - b_date.getTime()
+		})
+	}
 
-	const xAxis = getXAxis({ column_type: _config.x_axis.data_type })
-	const xAxisIsDate = FIELDTYPES.DATE.includes(_config.x_axis.data_type)
-	const granularity = xAxisIsDate ? chart.getGranularity(_config.x_axis.column_name) : null
+	if (reversed) {
+		indices.reverse()
+	}
+	return indices
+}
 
-	const leftYAxis = getYAxis()
+export function getLineChartOptions(config: LineChartConfig, result: QueryResult) {
+	const _columns = result.columns
+	const _rows = result.rows
+
+	// The x-axis dimension is a result column too; when it is numeric (e.g. an Integer
+	// day offset) it must not be picked up as a plotted series alongside the measures.
+	const x_dimension_name = config.x_axis.dimension.dimension_name
+	const number_columns = _columns.filter(
+		(c) => FIELDTYPES.NUMBER.includes(c.type) && c.name !== x_dimension_name,
+	)
+	const show_scrollbar = config.y_axis.show_scrollbar || false
+
+	const xAxis = getXAxis(config.x_axis)
+	const xAxisIsDate = isCalendarDateType(config.x_axis.dimension.data_type)
+	const granularity = xAxisIsDate
+		? getGranularity(config.x_axis.dimension.dimension_name, config)
+		: null
+
+	const leftYAxis = getYAxis({ min: config.y_axis.min, max: config.y_axis.max })
 	const rightYAxis = getYAxis()
-	const hasRightAxis = _config.y_axis.series.some((s) => s.align === 'Right')
+	const hasRightAxis = config.y_axis.series.some((s) => s.align === 'Right')
 	const yAxis = !hasRightAxis ? [leftYAxis] : [leftYAxis, rightYAxis]
 
-	const sortedRows = xAxisIsDate
-		? _rows.sort((a, b) => {
-				const a_date = new Date(a[_config.x_axis.column_name])
-				const b_date = new Date(b[_config.x_axis.column_name])
-				return a_date.getTime() - b_date.getTime()
-		  })
-		: _rows
+	const rowOrder = getAxisChartRowOrder(_rows, config.x_axis)
+	const sortedRows = rowOrder.map((i) => _rows[i])
 
 	const getSeriesData = (column: string) =>
 		sortedRows.map((r) => {
-			const x_value = r[_config.x_axis.column_name]
+			const x_value = r[config.x_axis.dimension.dimension_name]
 			const y_value = r[column]
 			return [x_value, y_value]
 		})
 
 	const colors = getColors()
 
+	const chartSeries = number_columns.map((c, idx) => {
+		const serie = getSerie(config, c.name) as SeriesLine
+
+		const is_right_axis = serie.align === 'Right'
+		const type = serie.type?.toLowerCase() || 'line'
+		const smooth = serie.smooth ?? config.y_axis.smooth
+		const show_data_points = serie.show_data_points ?? config.y_axis.show_data_points
+		const show_area = serie.show_area ?? config.y_axis.show_area
+		const show_data_labels = serie.show_data_labels ?? config.y_axis.show_data_labels
+		const color = serie.color?.[0] || colors[idx]
+		const name = config.split_by?.dimension?.column_name
+			? c.name
+			: serie.measure.measure_name || c.name
+		const hide_from_chart = serie.hide_from_chart || false
+
+		let labelPosition = 'top'
+		if (type === 'bar') {
+			labelPosition = 'inside'
+		}
+
+		return {
+			type,
+			name,
+			data: getSeriesData(c.name),
+			color: color,
+			yAxisIndex: is_right_axis ? 1 : 0,
+			smooth: smooth ? 0.4 : false,
+			smoothMonotone: 'x',
+			showSymbol: hide_from_chart ? false : show_data_points || show_data_labels,
+			label: {
+				fontSize: 11,
+				show: hide_from_chart ? false : show_data_labels,
+				position: labelPosition,
+				formatter: (params: any) => {
+					return getShortNumber(params.value?.[1], 1)
+				},
+			},
+			labelLayout: { hideOverlap: true },
+			itemStyle: { color: color },
+			areaStyle: show_area ? getAreaStyle(color) : undefined,
+			...(hide_from_chart
+				? {
+						lineStyle: { opacity: 0 },
+						itemStyle: { color: color, opacity: 0 },
+						areaStyle: undefined,
+						emphasis: { disabled: true },
+				  }
+				: {}),
+			_hide_from_chart: hide_from_chart,
+		}
+	})
+
+	const legendData = chartSeries.filter((s) => !s._hide_from_chart).map((s) => s.name)
+	const show_legend = legendData.length > 1
+
 	return {
 		animation: true,
 		animationDuration: 700,
-		grid: getGrid({ show_legend }),
+		dataZoom: getDataZoom(show_scrollbar),
+		grid: getGrid({ show_legend, show_scrollbar }),
 		color: colors,
 		xAxis,
 		yAxis,
-		series: number_columns.map((c, idx) => {
-			const serie = getSerie(_config, c.name) as SeriesLine
-
-			const is_right_axis = serie.align === 'Right'
-			const smooth = serie.smooth ?? _config.y_axis.smooth
-			const show_data_points = serie.show_data_points ?? _config.y_axis.show_data_points
-			const show_area = serie.show_area ?? _config.y_axis.show_area
-			const show_data_labels = serie.show_data_labels ?? _config.y_axis.show_data_labels
-
-			return {
-				type: 'line',
-				name: c.name,
-				data: getSeriesData(c.name),
-				emphasis: { focus: 'series' },
-				yAxisIndex: is_right_axis ? 1 : 0,
-				smooth: smooth ? 0.4 : false,
-				smoothMonotone: 'x',
-				showSymbol: show_data_points || show_data_labels,
-				label: {
-					fontSize: 11,
-					show: show_data_labels,
-					position: idx === number_columns.length - 1 ? 'top' : 'inside',
-					formatter: (params: any) => {
-						return getShortNumber(params.value?.[1], 1)
-					},
-				},
-				labelLayout: { hideOverlap: true },
-				itemStyle: { color: colors[idx] },
-				areaStyle: show_area ? getAreaStyle(colors[idx]) : undefined,
-			}
-		}),
+		series: [
+			...chartSeries,
+			...getReferenceLineSeries(config.y_axis.reference_lines, hasRightAxis, chartSeries),
+		],
 		tooltip: getTooltip({
 			xAxisIsDate,
 			granularity,
 		}),
-		legend: getLegend(show_legend),
+		legend: { ...getLegend(show_legend, show_scrollbar), data: legendData },
 	}
 }
 
@@ -121,91 +191,159 @@ function getAreaStyle(color: string) {
 	}
 }
 
-export function getBarChartOptions(chart: Chart) {
-	const _config = chart.doc.config as BarChartConfig
-	const _columns = chart.dataQuery.result.columns
-	const _rows = chart.dataQuery.result.rows
+function getDataZoom(show: boolean, swapAxes = false) {
+	return {
+		show,
+		orient: swapAxes ? 'vertical' : 'horizontal',
+		type: 'slider',
+		zoomLock: false,
+		bottom: swapAxes ? '20%' : '4%',
+		height: swapAxes ? '80%' : 15,
+		width: swapAxes ? 15 : '90%',
+		left: swapAxes ? null : '5%',
+		right: swapAxes ? 10 : null,
+		handleSize: 25,
+	}
+}
 
-	const number_columns = _columns.filter((c) => FIELDTYPES.NUMBER.includes(c.type))
+export function getBarChartOptions(config: BarChartConfig, result: QueryResult, swapAxes = false) {
+	const _columns = result.columns
+	const _rows = result.rows
+
+	// The x-axis dimension is a result column too; when it is numeric (e.g. an Integer
+	// day offset) it must not be picked up as a plotted series alongside the measures.
+	const x_dimension_name = config.x_axis.dimension.dimension_name
+	const number_columns = _columns.filter(
+		(c) => FIELDTYPES.NUMBER.includes(c.type) && c.name !== x_dimension_name,
+	)
+	const show_scrollbar = config.y_axis.show_scrollbar || false
+
+	const xAxis = getXAxis(config.x_axis)
+	const xAxisIsDate = isCalendarDateType(config.x_axis.dimension.data_type)
+	const granularity = xAxisIsDate
+		? getGranularity(config.x_axis.dimension.dimension_name, config)
+		: null
+
+	const leftYAxis = getYAxis({
+		normalized: config.y_axis.normalize,
+		min: config.y_axis.min,
+		max: config.y_axis.max,
+	})
+	const rightYAxis = getYAxis({ normalized: config.y_axis.normalize })
+	const hasRightAxis = config.y_axis.series.some((s) => s.align === 'Right')
+	const yAxis = !hasRightAxis ? [leftYAxis] : [leftYAxis, rightYAxis]
+
+	const rowOrder = getAxisChartRowOrder(_rows, config.x_axis, swapAxes)
+	const sortedRows = rowOrder.map((i) => _rows[i])
+
 	const total_per_x_value = _rows.reduce((acc, row) => {
-		const x_value = row[_config.x_axis.column_name]
+		const x_value = row[config.x_axis.dimension.dimension_name]
 		if (!acc[x_value]) acc[x_value] = 0
 		number_columns.forEach((m) => (acc[x_value] += row[m.name]))
 		return acc
 	}, {} as Record<string, number>)
 
-	const show_legend = number_columns.length > 1
-
-	const xAxis = getXAxis({ column_type: _config.x_axis.data_type })
-	const xAxisIsDate = FIELDTYPES.DATE.includes(_config.x_axis.data_type)
-	const granularity = xAxisIsDate ? chart.getGranularity(_config.x_axis.column_name) : null
-
-	const leftYAxis = getYAxis({ normalized: _config.y_axis.normalize })
-	const rightYAxis = getYAxis({ normalized: _config.y_axis.normalize })
-	const hasRightAxis = _config.y_axis.series.some((s) => s.align === 'Right')
-	const yAxis = !hasRightAxis ? [leftYAxis] : [leftYAxis, rightYAxis]
-
 	const getSeriesData = (column: string) =>
-		_rows.map((r) => {
-			const x_value = r[_config.x_axis.column_name]
-			const y_value = r[column]
-			const normalize = _config.y_axis.normalize
-			if (!normalize) {
-				return [x_value, y_value]
-			}
+		sortedRows
+			.map((r) => {
+				const x_value = r[config.x_axis.dimension.dimension_name]
+				const y_value = r[column]
+				const normalize = config.y_axis.normalize
+				if (!normalize) {
+					return [x_value, y_value]
+				}
 
-			const total = total_per_x_value[x_value]
-			const normalized_value = total ? (y_value / total) * 100 : 0
-			return [x_value, normalized_value]
-		})
+				const total = total_per_x_value[x_value]
+				const normalized_value = total ? (y_value / total) * 100 : 0
+				return [x_value, normalized_value]
+			})
+			.map((d) => (swapAxes ? [d[1], d[0]] : d))
 
 	const colors = getColors()
+
+	const chartSeries = number_columns.map((c, idx) => {
+		const serie = getSerie(config, c.name)
+		const is_right_axis = serie.align === 'Right'
+
+		const color = serie.color?.[0] || colors[idx]
+		const type = serie.type?.toLowerCase() || 'bar'
+		const stack = type === 'bar' && config.y_axis.stack ? 'stack' : undefined
+		const show_data_labels = serie.show_data_labels ?? config.y_axis.show_data_labels
+		const data = getSeriesData(c.name)
+		const name = config.split_by?.dimension?.column_name
+			? c.name
+			: serie.measure.measure_name || c.name
+		const hide_from_chart = serie.hide_from_chart || false
+
+		const roundedCorners = swapAxes ? [0, 2, 2, 0] : [2, 2, 0, 0]
+		const isLast = idx === number_columns.length - 1
+
+		let labelPosition = 'inside'
+		if (type == 'line') {
+			labelPosition = 'top'
+		}
+
+		return {
+			type,
+			stack: config.y_axis.overlap ? undefined : stack,
+			name,
+			data,
+			color: color,
+			label: {
+				show: hide_from_chart ? false : show_data_labels,
+				position: labelPosition,
+				formatter: (params: any) => {
+					const _val = swapAxes ? params.value?.[0] : params.value?.[1]
+					return getShortNumber(_val, 1)
+				},
+				fontSize: 11,
+			},
+			barGap: config.y_axis.overlap ? '-100%' : undefined,
+			labelLayout: { hideOverlap: true },
+			yAxisIndex: is_right_axis ? 1 : 0,
+			lineStyle: hide_from_chart ? { opacity: 0 } : undefined,
+			itemStyle: {
+				color: color,
+				opacity: hide_from_chart ? 0 : 1,
+				borderRadius: roundedCorners,
+			},
+			emphasis: hide_from_chart ? { disabled: true } : undefined,
+			_hide_from_chart: hide_from_chart,
+		}
+	})
+
+	const legendData = chartSeries.filter((s) => !s._hide_from_chart).map((s) => s.name)
+	const show_legend = legendData.length > 1
 
 	return {
 		animation: true,
 		animationDuration: 700,
 		color: colors,
-		grid: getGrid({ show_legend }),
-		xAxis: xAxis,
-		yAxis: yAxis,
-		series: number_columns.map((c, idx) => {
-			const serie = getSerie(_config, c.name)
-			const is_right_axis = serie.align === 'Right'
-
-			const stack = _config.y_axis.stack
-			const show_data_labels = serie.show_data_labels ?? _config.y_axis.show_data_labels
-
-			return {
-				type: 'bar',
-				stack,
-				name: c.name,
-				data: getSeriesData(c.name),
-				label: {
-					show: show_data_labels,
-					position: idx === number_columns.length - 1 ? 'top' : 'inside',
-					formatter: (params: any) => {
-						return getShortNumber(params.value?.[1], 1)
-					},
-					fontSize: 11,
-				},
-				labelLayout: { hideOverlap: true },
-				emphasis: { focus: 'series' },
-				barMaxWidth: 60,
-				yAxisIndex: is_right_axis ? 1 : 0,
-				itemStyle: { color: colors[idx] },
-			}
-		}),
+		grid: getGrid({ show_legend, show_scrollbar, swapAxes }),
+		xAxis: swapAxes ? yAxis : xAxis,
+		yAxis: swapAxes ? xAxis : yAxis,
+		dataZoom: getDataZoom(show_scrollbar, swapAxes),
+		series: [
+			...chartSeries,
+			...getReferenceLineSeries(
+				config.y_axis.reference_lines,
+				hasRightAxis,
+				chartSeries,
+				swapAxes,
+			),
+		],
 		tooltip: getTooltip({
 			xAxisIsDate,
 			granularity,
+			xySwapped: swapAxes,
 		}),
-		legend: getLegend(show_legend),
+		legend: { ...getLegend(show_legend, show_scrollbar, swapAxes), data: legendData },
 	}
 }
 
-function getSerie(config: AxisChartConfig, number_column: string) {
+function getSerie(config: AxisChartConfig, number_column: string): Series {
 	let serie
-	if (!config.split_by?.column_name) {
+	if (!config.split_by?.dimension?.column_name) {
 		serie = config.y_axis.series.find((s) => s.measure.measure_name === number_column)
 	} else {
 		let seriesCount = config.y_axis.series.filter((s) => s.measure.measure_name).length
@@ -215,29 +353,53 @@ function getSerie(config: AxisChartConfig, number_column: string) {
 			serie = config.y_axis.series.find((s) => number_column.includes(s.measure.measure_name))
 		}
 	}
-	serie = serie || config.y_axis.series[0]
-	return serie
+
+	return (
+		serie ||
+		({
+			measure: {
+				measure_name: number_column,
+			},
+		} as Series)
+	)
 }
 
-type XAxisCustomizeOptions = {
-	column_type?: ColumnDataType
-}
-function getXAxis(options: XAxisCustomizeOptions = {}) {
-	const xAxisIsDate = options.column_type && FIELDTYPES.DATE.includes(options.column_type)
+function getXAxis(x_axis: XAxis) {
+	const columnType = x_axis.dimension.data_type
+	const xAxisIsDate = isCalendarDateType(columnType)
+	const rotation = Math.min(Math.max(x_axis.label_rotation || 0, 0), 90)
+
 	return {
 		type: xAxisIsDate ? 'time' : 'category',
 		z: 2,
 		scale: true,
-		boundaryGap: ['1%', '2%'],
+		alignTicks: true,
+		boundaryGap: ['1%', '1%'],
 		splitLine: { show: false },
-		axisLine: { show: true },
-		axisTick: { show: false },
+		axisLine: { show: true, onZero: true },
+		axisTick: { show: true },
+		axisLabel: {
+			show: true,
+			rotate: rotation,
+			width: 100,
+			overflow: 'truncate',
+			ellipsis: '...',
+			...(x_axis.dimension.granularity === 'fiscal_year'
+				? {
+						formatter: (value: any) => {
+							return getFormattedDate(value, 'fiscal_year')
+						},
+				  }
+				: null),
+		},
 	}
 }
 
 type YAxisCustomizeOptions = {
 	is_secondary?: boolean
 	normalized?: boolean
+	min?: number
+	max?: number
 }
 function getYAxis(options: YAxisCustomizeOptions = {}) {
 	return {
@@ -248,26 +410,176 @@ function getYAxis(options: YAxisCustomizeOptions = {}) {
 		alignTicks: true,
 		boundaryGap: ['0%', '1%'],
 		splitLine: { show: true },
-		axisTick: { show: false },
-		axisLine: { show: false, onZero: false },
+		axisTick: { show: true },
+		axisLine: { show: true, onZero: true },
 		axisLabel: {
 			show: true,
 			hideOverlap: true,
-			margin: 4,
+			margin: 8,
 			formatter: (value: number) => getShortNumber(value, 1),
 		},
-		min: options.normalized ? 0 : undefined,
-		max: options.normalized ? 100 : undefined,
+		min: options.normalized ? 0 : options.min || undefined,
+		max: options.normalized ? 100 : options.max || undefined,
 	}
 }
 
-export function getDonutChartOptions(chart: Chart) {
-	const config = chart.doc.config as DountChartConfig
-	const columns = chart.dataQuery.result.columns
-	const rows = chart.dataQuery.result.rows
+// Reference lines are drawn as markLines on their own empty series, one per value axis
+// they target, instead of on a plotted series. A markLine inherits the axis and the
+// visibility of its host, so hosting on real data would put a line on the wrong scale and
+// let a legend toggle take it away with the series. A 'y' line targets the left axis, or
+// the right one when align === 'Right'; 'x' (category) lines have no left/right and ride
+// with the left group. Append the result to `series` after the legend is built so these
+// hosts stay out of it.
+function getReferenceLineSeries(
+	reference_lines: ReferenceLine[] | undefined,
+	hasRightAxis: boolean,
+	chartSeries: any[],
+	swapAxes = false,
+) {
+	if (!reference_lines?.length) return []
 
-	const MAX_SLICES = 10
-	const data = getDonutChartData(columns, rows, MAX_SLICES)
+	const targetsRight = (line: ReferenceLine) =>
+		hasRightAxis && (line.axis || 'y') === 'y' && line.align === 'Right'
+
+	// the value axis is the yAxis normally, but becomes the xAxis when axes are swapped
+	const axisIndexKey = swapAxes ? 'xAxisIndex' : 'yAxisIndex'
+
+	return [
+		{ axisIndex: 0, lines: reference_lines.filter((l) => !targetsRight(l)) },
+		{ axisIndex: 1, lines: reference_lines.filter(targetsRight) },
+	]
+		.map(({ axisIndex, lines }) => {
+			// reading every plotted point is only worth it when a line asks for a statistic
+			const values = lines.some((l) => l.statistic)
+				? getPlottedValues(chartSeries, axisIndex, swapAxes)
+				: []
+			const markLine = getReferenceMarkLine(lines, values, swapAxes)
+			return markLine
+				? {
+						type: 'line',
+						name: `_reference_lines_${axisIndex}`,
+						data: [],
+						silent: true,
+						[axisIndexKey]: axisIndex,
+						markLine,
+				  }
+				: undefined
+		})
+		.filter(Boolean)
+}
+
+// Every number the chart draws on one value axis. A statistic reference line reads these,
+// so it lands on the same numbers the reader sees, across all measures on that axis. A
+// hidden series is not on screen, and a stacked series is drawn as the stack total, so the
+// line is compared against the bar top rather than against one measure inside it.
+function getPlottedValues(chartSeries: any[], axisIndex: number, swapAxes: boolean) {
+	const plotted = chartSeries.filter(
+		(s) => (s.yAxisIndex || 0) === axisIndex && !s._hide_from_chart,
+	)
+
+	const values: number[] = []
+	const stackTotals: Record<string, number> = {}
+
+	plotted.forEach((s) => {
+		;(s.data || []).forEach((point: any) => {
+			const value = toPlottedNumber(swapAxes ? point[0] : point[1])
+			if (value === undefined) return
+			if (!s.stack) {
+				values.push(value)
+				return
+			}
+			// a gap in one series still leaves the rest of the stack drawn, and echarts
+			// stacks a negative value downwards from zero, giving the bar two ends
+			const category = swapAxes ? point[1] : point[0]
+			const key = `${s.stack}:${category}:${value < 0 ? 'below' : 'above'}`
+			stackTotals[key] = (stackTotals[key] || 0) + value
+		})
+	})
+
+	return [...values, ...Object.values(stackTotals)]
+}
+
+// an empty cell is drawn as a gap, not as a zero, so it is not a plotted number
+function toPlottedNumber(value: any) {
+	if (value === null || value === undefined || value === '') return undefined
+	const number = Number(value)
+	return isNaN(number) ? undefined : number
+}
+
+function getStatisticValue(statistic: ReferenceLine['statistic'], values: number[]) {
+	if (!values.length) return undefined
+	if (statistic === 'min') return Math.min(...values)
+	if (statistic === 'max') return Math.max(...values)
+	if (statistic === 'average') return values.reduce((a, b) => a + b, 0) / values.length
+	if (statistic !== 'median') return undefined
+
+	const sorted = [...values].sort((a, b) => a - b)
+	const mid = Math.floor(sorted.length / 2)
+	return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+}
+
+// A 'y' line is horizontal (at a measure value); an 'x' line is vertical (at a
+// category/date value). `swapAxes` (Row chart) flips which ECharts axis each maps to.
+function getReferenceMarkLine(
+	reference_lines: ReferenceLine[] | undefined,
+	plottedValues: number[],
+	swapAxes = false,
+) {
+	if (!reference_lines?.length) return undefined
+
+	const data = reference_lines
+		.map((line) => {
+			const onValueAxis = (line.axis || 'y') === 'y'
+			const statistic = onValueAxis ? line.statistic : undefined
+			const value = statistic ? getStatisticValue(statistic, plottedValues) : line.value
+			if (value === undefined || value === null || value === '') return undefined
+
+			// the value axis is yAxis normally, but becomes xAxis when axes are swapped
+			const axisKey = onValueAxis === !swapAxes ? 'yAxis' : 'xAxis'
+			const rawValue = onValueAxis ? Number(value) : value
+			// a category value left on a line that moved to the value axis is not plottable
+			if (typeof rawValue === 'number' && isNaN(rawValue)) return undefined
+			// a neutral gray by default, so a reference line doesn't read as another measure
+			const color = line.color || '#6b7280'
+
+			const entry: any = {
+				[axisKey]: rawValue,
+				lineStyle: {
+					type: line.dashed ? 'dashed' : 'solid',
+					width: 1.5,
+					color,
+				},
+			}
+			// a fixed line shows its number in the value box; a statistic line has none,
+			// so the label carries the number the line was drawn at
+			const label = line.label || (statistic ? getShortNumber(Number(value), 1) : '')
+			if (label) {
+				entry.label = {
+					show: true,
+					position: 'insideEndTop',
+					formatter: label,
+					color,
+				}
+			}
+			return entry
+		})
+		.filter(Boolean)
+
+	if (!data.length) return undefined
+
+	return {
+		silent: true,
+		symbol: 'none',
+		data,
+	}
+}
+
+export function getDonutChartOptions(config: DonutChartConfig, result: QueryResult) {
+	const columns = result.columns
+	const rows = result.rows
+
+	const valueColumn = columns.find((c) => FIELDTYPES.MEASURE.includes(c.type))
+	const data = getDonutChartData(columns, rows, config.max_slices || 10)
 	const labels = data.map((d) => d[0])
 	const values = data.map((d) => d[1])
 	const total = values.reduce((a, b) => a + b, 0)
@@ -276,6 +588,8 @@ export function getDonutChartOptions(chart: Chart) {
 
 	let center, radius, top, left, right, bottom, padding, orient
 	const legend_position = config.legend_position || 'bottom'
+	const show_inline_labels = config.show_inline_labels || false
+
 	if (legend_position == 'bottom') {
 		orient = 'horizontal'
 		radius = ['45%', '75%']
@@ -309,6 +623,11 @@ export function getDonutChartOptions(chart: Chart) {
 		padding = [30, 0, 30, 0]
 	}
 
+	if (show_inline_labels) {
+		center = ['50%', '50%']
+		radius = ['45%', '75%']
+	}
+
 	return {
 		animation: true,
 		animationDuration: 700,
@@ -317,29 +636,46 @@ export function getDonutChartOptions(chart: Chart) {
 		series: [
 			{
 				type: 'pie',
+				name: valueColumn?.name,
 				center,
 				radius,
-				labelLine: { show: false },
-				label: { show: false },
-				emphasis: {
-					scaleSize: 5,
+				labelLine: {
+					show: show_inline_labels,
+					lineStyle: {
+						width: 2,
+					},
+					length: 10,
+					length2: 20,
+					smooth: true,
 				},
+				label: {
+					show: show_inline_labels,
+					formatter: ({ value, name }: any) => {
+						const percentage = total > 0 ? (value[1] / total) * 100 : 0
+						return `${ellipsis(name, 20)} (${percentage.toFixed(0)}%)`
+					},
+				},
+				emphasis: { scaleSize: 5 },
 			},
 		],
-		legend: {
-			...getLegend(),
-			top,
-			left,
-			right,
-			bottom,
-			padding,
-			orient,
-			formatter: (name: string) => {
-				const labelIndex = labels.indexOf(name)
-				const percent = (values[labelIndex] / total) * 100
-				return `${ellipsis(name, 20)} (${percent.toFixed(0)}%)`
-			},
-		},
+		legend: !show_inline_labels
+			? {
+					...getLegend(),
+					top,
+					left,
+					right,
+					bottom,
+					padding,
+					orient,
+					formatter: (name: string) => {
+						const labelIndex = labels.indexOf(name)
+						const percentage = total > 0 ? (values[labelIndex] / total) * 100 : 0
+						return `${ellipsis(name, 20)} (${percentage.toFixed(0)}%)`
+					},
+			  }
+			: {
+					show: false,
+			  },
 		tooltip: {
 			trigger: 'item',
 			confine: true,
@@ -355,7 +691,7 @@ export function getDonutChartOptions(chart: Chart) {
 function getDonutChartData(
 	columns: QueryResultColumn[],
 	rows: QueryResultRow[],
-	maxSlices: number
+	maxSlices: number,
 ) {
 	const measureColumn = columns.find((c) => FIELDTYPES.MEASURE.includes(c.type))
 	if (!measureColumn) {
@@ -366,7 +702,6 @@ function getDonutChartData(
 	if (!labelColumn) {
 		throw new Error('No label column found')
 	}
-
 	const valueByLabel = rows.reduce((acc, row) => {
 		const label = row[labelColumn.name]
 		const value = row[measureColumn.name]
@@ -384,68 +719,702 @@ function getDonutChartData(
 	if (othersTotal) {
 		topData.push(['Others', othersTotal])
 	}
-
 	return topData
 }
 
-export function getFunnelChartOptions(chart: Chart) {
-	const config = chart.doc.config as DountChartConfig
-	const rows = chart.dataQuery.result.rows
+export function getFunnelChartOptions(config: FunnelChartConfig, result: QueryResult) {
+	const rows = result.rows
 
-	const labelColumn = config.label_column.column_name
+	const labelColumn = config.label_column.dimension_name
 	const valueColumn = config.value_column.measure_name
-	const labels = rows.map((r) => r[labelColumn])
-	const values = rows.map((r) => r[valueColumn])
+	const show_percentage = config.show_percentage ?? true
 
-	const colors = getColors()
+	const categories = rows.map((r) => r[labelColumn] as string)
+	const dataValues = rows.map((r) => r[valueColumn] as number)
+
+	const count = dataValues.length
+	const colors = Array.from({ length: count }, (_, i) => {
+		const ratio = count === 1 ? 0 : i / (count - 1)
+		const l = 52 + (82 - 52) * ratio
+		return `hsl(208 67.9% ${l.toFixed(1)}%)`
+	})
+
+	const maxDataValue = Math.max(...dataValues)
+	const maxValue = maxDataValue * 1.05
+	// Square-root scaling: compresses large values and preserves visual gap between small ones
+	const visualValues = dataValues.map((v) =>
+		maxDataValue * Math.sqrt((v as number) / maxDataValue),
+	)
 
 	return {
 		animation: true,
 		animationDuration: 300,
-		color: colors,
+		grid: {
+			left: 16,
+			right: 16,
+			top: 66,
+			bottom: 16,
+		},
+		tooltip: {
+			show: true,
+			trigger: 'item',
+			confine: true,
+			appendToBody: false,
+			formatter: (params: any) => {
+				const value = formatNumber(params.value)
+				const pct =
+					show_percentage && dataValues[0] > 0
+						? ` (${((params.value / dataValues[0]) * 100).toFixed(0)}%)`
+						: ''
+				return `
+					<div class="flex items-center justify-between gap-5">
+						<div>${params.name}</div>
+						<div class="font-bold">${value}${pct}</div>
+					</div>`
+			},
+			backgroundColor: '#fff',
+			borderColor: '#E5E7EB',
+			borderWidth: 1,
+			padding: [8, 12],
+			textStyle: {
+				color: '#111827',
+				fontSize: 13,
+			},
+			extraCssText:
+				'box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); border-radius: 8px;',
+		},
+		xAxis: {
+			type: 'category',
+			data: categories,
+			boundaryGap: true,
+			show: false,
+		},
+		yAxis: {
+			type: 'value',
+			show: false,
+			min: 0,
+			max: maxValue,
+		},
 		series: [
 			{
-				name: 'Funnel',
-				type: 'funnel',
-				orient: 'vertical',
-				funnelAlign: 'center',
-				top: 'center',
-				left: 'center',
-				width: '60%',
-				height: '80%',
-				minSize: '0%',
-				maxSize: '100%',
-				sort: 'descending',
-				label: {
-					show: true,
-					position: 'inside',
-					formatter: (params: any) => {
-						const index = labels.indexOf(params.name)
-						const percent = ((values[index] / values[0]) * 100).toFixed(0)
-						return `${params.name} (${percent}%)`
+				type: 'custom',
+				name: valueColumn,
+				emphasis: { disabled: true },
+				data: dataValues.map((val, i) => ({
+					name: categories[i],
+					value: val,
+					itemStyle: { color: colors[i % colors.length] },
+				})),
+				renderItem: (params: any, api: any) => {
+					const i = params.dataIndex
+					const val = dataValues[i] as number
+					const visualVal = visualValues[i]
+					// slope target: top of next bar, or taper last bar slightly
+					const nextVisual =
+						i < visualValues.length - 1
+							? visualValues[i + 1]
+							: Math.max(visualVal - maxDataValue * 0.06, 0)
+
+					const width = api.size([1, 0])[0]
+					const cx = api.coord([params.dataIndex, 0])[0]
+					const x = cx - width / 2
+					const nextX = cx + width / 2
+
+					const y1 = api.coord([0, visualVal])[1]
+					const y2 = api.coord([0, nextVisual])[1]
+					const yBottom = api.coord([0, 0])[1]
+
+					const r = 8
+					const m = (y2 - y1) / (nextX - x)
+
+					const pctText =
+						show_percentage && dataValues[0] > 0
+							? ` (${((val / dataValues[0]) * 100).toFixed(0)}%)`
+							: ''
+					const valueText = `${getShortNumber(val, 2)}${pctText}`
+
+					return {
+						type: 'group',
+						children: [
+							{
+								type: 'path',
+								shape: {
+									pathData: `M ${x} ${yBottom} L ${x} ${y1 + r} Q ${x} ${y1} ${x + r} ${y1 + m * r} L ${nextX - r} ${y2 - m * r} Q ${nextX} ${y2} ${nextX} ${y2 + r} L ${nextX} ${yBottom} Z`,
+								},
+								style: {
+									fill: colors[params.dataIndex % colors.length],
+								},
+								emphasis: {
+									style: {
+										fill: colors[params.dataIndex % colors.length],
+									},
+								},
+							},
+							{
+								type: 'text',
+								x: params.dataIndex === 0 ? x : x + 16,
+								y: 8,
+								style: {
+									text: valueText,
+									fill: '#111827',
+									fontSize: 16,
+									fontWeight: 500,
+									textVerticalAlign: 'top',
+									width: width - 32,
+									overflow: 'truncate',
+								},
+							},
+							{
+								type: 'text',
+								x: params.dataIndex === 0 ? x : x + 16,
+								y: 32,
+								style: {
+									text: categories[params.dataIndex] || '',
+									fill: '#6b7280',
+									fontSize: 12,
+									textVerticalAlign: 'top',
+									width: width - 32,
+									overflow: 'truncate',
+								},
+							},
+							...(params.dataIndex < dataValues.length - 1
+								? [
+										{
+											type: 'line',
+											shape: {
+												x1: nextX,
+												y1: 0,
+												x2: nextX,
+												y2: api.getHeight(),
+											},
+											style: {
+												stroke: '#E5E7EB',
+												lineWidth: 1,
+											},
+										},
+									]
+								: []),
+						],
 					}
 				},
-				gap: 2,
-				data: values.map((value, index) => ({
-					name: labels[index],
-					value: value,
-					itemStyle: {
-						color: colors[index],
-						borderColor: colors[index],
-						borderWidth: 1,
-					},
+			},
+		],
+	}
+}
+
+function getMapChartData(
+	columns: QueryResultColumn[],
+	rows: QueryResultRow[],
+	config?: MapChartConfig,
+) {
+	const measureColumn = columns.find((c) => FIELDTYPES.MEASURE.includes(c.type))
+	if (!measureColumn) {
+		throw new Error('No measure column found')
+	}
+
+	const locationColumn = columns.find((c) => FIELDTYPES.DIMENSION.includes(c.type))
+	if (!locationColumn) {
+		throw new Error('No location column found')
+	}
+
+	// Get region mappings from config
+	const regionMappings = config?.region_mappings?.[config.map_type || 'world'] || {}
+
+	let aggregationColumn = locationColumn
+	const locationValueMap = new Map<string, number>()
+
+	for (const row of rows) {
+		const rawLocation = row[aggregationColumn.name]
+		const mappedLocation = regionMappings[rawLocation] || toTitleCase(rawLocation)
+		const value = row[measureColumn.name]
+
+		const currentValue = locationValueMap.get(mappedLocation) || 0
+		locationValueMap.set(mappedLocation, currentValue + value)
+	}
+
+	const data = Array.from(locationValueMap.entries())
+		.sort((a, b) => b[1] - a[1])
+		.map(([location, value]) => [location, value])
+
+	return data
+}
+
+function jenksMatrices(data: number[], nClasses: number) {
+	//initialize matrices
+	const mat1 = Array.from({ length: data.length + 1 }, () => Array(nClasses + 1).fill(0))
+	const mat2 = Array.from({ length: data.length + 1 }, () => Array(nClasses + 1).fill(0))
+
+	for (let i = 1; i <= nClasses; i++) {
+		mat1[1][i] = 1
+		mat2[1][i] = 0
+		for (let j = 2; j <= data.length; j++) mat2[j][i] = Infinity
+	}
+	return { mat1, mat2 }
+}
+
+function jenksBreaks(data: number[], nClasses: number, mat1: number[][], mat2: number[][]) {
+	for (let l = 2; l <= data.length; l++) {
+		let s1 = 0,
+			s2 = 0,
+			w = 0
+		for (let m = 1; m <= l; m++) {
+			const i3 = l - m + 1
+			const val = data[i3 - 1]
+			s2 += val * val
+			s1 += val
+			w++
+			const v = s2 - (s1 * s1) / w
+			const i4 = i3 - 1
+			if (i4 !== 0) {
+				for (let j = 2; j <= nClasses; j++) {
+					if (mat2[l][j] >= v + mat2[i4][j - 1]) {
+						mat1[l][j] = i3
+						mat2[l][j] = v + mat2[i4][j - 1]
+					}
+				}
+			}
+		}
+
+		mat1[l][1] = 1
+		mat2[l][1] = s2 - (s1 * s1) / w
+	}
+}
+
+function jenks(data: number[], nClasses: number) {
+	data = data.slice().sort((a, b) => a - b)
+	const { mat1, mat2 } = jenksMatrices(data, nClasses)
+
+	jenksBreaks(data, nClasses, mat1, mat2)
+
+	const kClass = Array(nClasses + 1).fill(0)
+	kClass[nClasses] = data[data.length - 1]
+	let k = data.length,
+		countNum = nClasses
+	while (countNum >= 2) {
+		const idx = mat1[k][countNum] - 2
+		kClass[countNum - 1] = data[idx]
+		k = mat1[k][countNum] - 1
+		countNum--
+	}
+	kClass[0] = data[0]
+	return kClass
+}
+
+// visual map pieces
+function mapPieces(values: number[]) {
+	if (values.length === 0) {
+		return [{ min: 0, max: 0, label: '0' }]
+	}
+
+	const validValues = values.filter((v) => typeof v === 'number' && !isNaN(v) && v > 0)
+
+	if (validValues.length === 0) {
+		return [{ min: 0, max: 0, label: '0' }]
+	}
+
+	if (validValues.length === 1) {
+		return [
+			{
+				min: 0,
+				max: validValues[0],
+				label: getShortNumber(validValues[0], 1),
+			},
+		]
+	}
+
+	const sortedValues = validValues.sort((a, b) => a - b)
+	const uniqueValues = [...new Set(sortedValues)]
+	const numClasses = Math.min(5, uniqueValues.length)
+
+	const breaks = jenks(uniqueValues, numClasses)
+
+	const pieces = []
+
+	// create pieces from the breaks
+	for (let i = 0; i < breaks.length - 1; i++) {
+		const rangeMax = breaks[i + 1]
+		const rangeMin = i === 0 ? 0 : breaks[i]
+
+		pieces.push({
+			gt: rangeMin,
+			lte: rangeMax,
+			label: getShortNumber(rangeMax, 1),
+		})
+	}
+
+	return pieces.reverse()
+}
+
+export function getMapChartOptions(config: MapChartConfig, result: QueryResult) {
+	const columns = result.columns
+	const rows = result.rows
+
+	const measureColumn = columns.find((c) => FIELDTYPES.MEASURE.includes(c.type))
+	const locationColumn = columns.find((c) => FIELDTYPES.DIMENSION.includes(c.type))
+
+	if (!measureColumn || !locationColumn) {
+		return null
+	}
+
+	let jsonUrl = ''
+	if (config.map_type === 'world') {
+		jsonUrl = 'world'
+	} else if (config.map_type === 'india') {
+		jsonUrl = 'india'
+	}
+
+	const data = getMapChartData(columns, rows, config)
+	const values = data.map((d) => d[1])
+
+	const options: any = {
+		height: '100%',
+		animation: true,
+		animationDuration: 300,
+		tooltip: {
+			trigger: 'item',
+			formatter: (params: any) => {
+				// eg. Maharashtra: 1,23,456
+				const value = params.value ? getShortNumber(params.value, 2) : '0'
+				return `<div class="flex items-center justify-between gap-5">
+					<div>${params.name}</div>
+					<div class="font-bold">${value}</div>
+				</div>`
+			},
+		},
+		visualMap: {
+			type: 'piecewise',
+			pieces: mapPieces(values),
+			itemSymbol: 'circle',
+			inRange: {
+				color: ['#dbeeff', '#b7ddff', '#92cdff', '#6ebcff', '#4aabff'],
+			},
+		},
+		series: [
+			{
+				name: measureColumn.name,
+				type: 'map',
+				map: jsonUrl,
+				projection: {
+					project: (point: [number, number]) => [
+						(point[0] / 180) * Math.PI,
+						-Math.log(Math.tan((Math.PI / 2 + (point[1] / 180) * Math.PI) / 2)),
+					],
+					unproject: (point: [number, number]) => [
+						(point[0] * 180) / Math.PI,
+						((2 * 180) / Math.PI) * Math.atan(Math.exp(point[1])) - 90,
+					],
+				},
+				data: data.map((d) => ({
+					name: d[0],
+					value: d[1],
 				})),
+				itemStyle: {
+					color: 'rgb(68, 68, 68)',
+					areaColor: 'rgb(243, 243, 243)',
+					borderWidth: 0.5,
+					borderColor: 'rgb(124, 124, 124)',
+				},
+				emphasis: false,
+				selectedMode: false,
+			},
+		],
+	}
+
+	return options
+}
+
+export function getBubbleChartOptions(config: BubbleChartConfig, result: QueryResult) {
+	const _rows = result.rows
+
+	const xColumnName = config.xAxis?.measure_name
+	const yColumnName = config.yAxis?.measure_name
+
+	if (!xColumnName || !yColumnName) {
+		return null
+	}
+
+	const colors = getColors()
+	const sizeColumnName = config.size_column?.measure_name
+	const nameColumnName = config.dimension?.dimension_name || config.dimension?.column_name
+	const groupByColumnName =
+		config.quadrant_column?.dimension_name || config.quadrant_column?.column_name
+	const show_data_labels = config.show_data_labels || false
+
+	const scatterData = _rows.map((row) => {
+		const xValue = row[xColumnName]
+		const yValue = row[yColumnName]
+		const sizeValue = sizeColumnName ? row[sizeColumnName] : undefined
+		const nameValue = nameColumnName ? row[nameColumnName] : undefined
+		const groupValue = groupByColumnName ? row[groupByColumnName] : undefined
+		return [xValue, yValue, sizeValue, nameValue, groupValue]
+	})
+
+	const seriesMap = new Map<string, any[]>()
+	scatterData.forEach((dataPoint) => {
+		const groupValue = dataPoint[4]
+		if (!seriesMap.has(groupValue)) {
+			seriesMap.set(groupValue, [])
+		}
+		seriesMap.get(groupValue)!.push(dataPoint)
+	})
+
+	// calculate symbol size
+	let symbolSizeConfig: any = 10
+	if (sizeColumnName) {
+		const allSizes = _rows
+			.map((r) => r[sizeColumnName])
+			.filter((val) => val != null && !isNaN(val))
+		if (allSizes.length > 0) {
+			const minSize = Math.min(...allSizes)
+			const maxSize = Math.max(...allSizes)
+			const sizeRange = maxSize - minSize
+
+			symbolSizeConfig = (value: any[]) => {
+				const size = value[2]
+				if (size === undefined || size === null || isNaN(size)) return 10
+				if (sizeRange === 0) return 20
+				const normalized = (size - minSize) / sizeRange
+				return 10 + normalized * 25
+			}
+		}
+	}
+
+	const show_legend = !!groupByColumnName && seriesMap.size > 1
+	const series = Array.from(seriesMap.entries()).map(([groupName, data], idx) => {
+		const color = colors[idx % colors.length]
+
+		const seriesConfig: any = {
+			name: groupName,
+			type: 'scatter',
+			data: data,
+			symbolSize: symbolSizeConfig,
+			itemStyle: {
+				color: color,
+			},
+			label: {
+				show: show_data_labels,
+				position: 'top',
+				fontSize: 11,
+				formatter: (params: any) => {
+					if (nameColumnName && params.data[3]) {
+						return params.data[3]
+					}
+					const yVal = params.data[1]
+					return isNaN(yVal) ? yVal : getShortNumber(yVal, 1)
+				},
+			},
+			labelLayout: { hideOverlap: true },
+			emphasis: {
+				itemStyle: {
+					borderWidth: 6,
+					borderCap: 'round',
+					borderJoin: 'round',
+				},
+			},
+		}
+
+		if (idx === 0 && config.show_quadrants) {
+			const markLines: any[] = []
+			if (config.xAxis_refLine !== undefined && config.xAxis_refLine !== null) {
+				markLines.push({
+					xAxis: config.xAxis_refLine,
+					lineStyle: { type: 'dashed', width: 1.5 },
+				})
+			}
+			if (config.yAxis_refLine !== undefined && config.yAxis_refLine !== null) {
+				markLines.push({
+					yAxis: config.yAxis_refLine,
+					lineStyle: { type: 'dashed', width: 1.5 },
+				})
+			}
+			if (markLines.length > 0) {
+				seriesConfig.markLine = {
+					silent: true,
+					symbol: 'none',
+					data: markLines,
+				}
+			}
+		}
+
+		return seriesConfig
+	})
+
+	const xColumnLabel =
+		result.columnOptions.find((c) => c.value === xColumnName)?.label || xColumnName
+	const yColumnLabel =
+		result.columnOptions.find((c) => c.value === yColumnName)?.label || yColumnName
+
+	const xAxis = {
+		...getYAxis(),
+		name: xColumnLabel,
+		nameLocation: 'middle',
+		nameGap: 25,
+	}
+
+	const yAxis = {
+		...getYAxis(),
+		name: yColumnLabel,
+		nameLocation: 'middle',
+		nameGap: 35,
+	}
+
+	const titles: any[] = []
+
+	return {
+		animation: true,
+		animationDuration: 700,
+		color: colors,
+		title: titles,
+		grid: getGrid({ show_legend }),
+		xAxis,
+		yAxis,
+		series,
+		tooltip: {
+			trigger: 'item',
+			confine: true,
+			appendToBody: false,
+			formatter: (params: any) => {
+				const xVal = params.value[0]
+				const yVal = params.value[1]
+				const sizeVal = params.value[2]
+				const name = params.value[3] || params.seriesName
+				const formattedX = isNaN(xVal) ? xVal : formatNumber(xVal)
+				const formattedY = isNaN(yVal) ? yVal : formatNumber(yVal)
+
+				let html = `
+					<div class="flex flex-col gap-1">
+						<div class="font-bold">${name}</div>
+						<div class="flex items-center justify-between gap-5">
+							<div>${xColumnLabel}:</div>
+							<div class="font-bold">${formattedX}</div>
+						</div>
+						<div class="flex items-center justify-between gap-5">
+							<div>${yColumnLabel}:</div>
+							<div class="font-bold">${formattedY}</div>
+						</div>`
+
+				if (sizeVal !== undefined && sizeVal !== null) {
+					const formattedSize = isNaN(sizeVal) ? sizeVal : formatNumber(sizeVal)
+					html += `
+						<div class="flex items-center justify-between gap-5">
+							<div>${sizeColumnName}:</div>
+							<div class="font-bold">${formattedSize}</div>
+						</div>`
+				}
+
+				html += `</div>`
+				return html
+			},
+		},
+		legend: getLegend(show_legend),
+	}
+}
+
+export function getSankeyChartOptions(config: SankeyChartConfig, result: QueryResult) {
+	const rows = result.rows
+	const columns = result.columns
+
+	const sourceColumn = columns.find(
+		(c) =>
+			c.name === config.source_column?.dimension_name ||
+			c.name === config.source_column?.column_name,
+	)?.name
+	const targetColumn = columns.find(
+		(c) =>
+			c.name === config.target_column?.dimension_name ||
+			c.name === config.target_column?.column_name,
+	)?.name
+	const valueColumn = columns.find(
+		(c) =>
+			c.name === config.value_column?.measure_name ||
+			c.name === config.value_column?.column_name,
+	)?.name
+
+	if (!sourceColumn || !targetColumn || !valueColumn) {
+		return null
+	}
+
+	const orient = config.orient || 'horizontal'
+	const nodeAlign = config.node_align || 'justify'
+
+	const nodeSet = new Set<string>()
+	const links: { source: string; target: string; value: number }[] = []
+
+	for (const row of rows) {
+		const source = String(row[sourceColumn])
+		const target = String(row[targetColumn])
+		const value = Number(row[valueColumn]) || 0
+		nodeSet.add(source)
+		nodeSet.add(target)
+		links.push({ source, target, value })
+	}
+
+	const nodes = Array.from(nodeSet).map((name) => ({ name }))
+
+	return {
+		animation: true,
+		animationDuration: 300,
+		tooltip: {
+			trigger: 'item',
+			confine: true,
+			appendToBody: false,
+			formatter: (params: any) => {
+				if (params.dataType === 'edge') {
+					const value = formatNumber(params.value)
+					return `
+						<div class="flex flex-col gap-1">
+							<div class="flex items-center justify-between gap-5">
+								<div>${params.data.source} → ${params.data.target}</div>
+								<div class="font-bold">${value}</div>
+							</div>
+						</div>`
+				}
+				const value = formatNumber(params.value)
+				return `
+					<div class="flex items-center justify-between gap-5">
+						<div>${params.name}</div>
+						<div class="font-bold">${value}</div>
+					</div>`
+			},
+		},
+		series: [
+			{
+				type: 'sankey',
+				orient,
+				nodeAlign,
+				top: '5%',
+				bottom: '5%',
+				left: '5%',
+				right: '10%',
+				draggable: false,
+				emphasis: { focus: 'adjacency' },
+				label: {
+					color: '#565656',
+					fontSize: 12,
+				},
+				lineStyle: {
+					color: 'source',
+					opacity: 0.4,
+					curveness: 0.1,
+				},
+				data: nodes,
+				links,
 			},
 		],
 	}
 }
 
 function getGrid(options: any = {}) {
+	let bottom = options.show_legend ? 45 : 22
+	if (options.show_scrollbar && !options.swapAxes) {
+		bottom += 30
+	}
+
 	return {
 		top: 18,
 		left: 30,
 		right: 30,
-		bottom: options.show_legend ? 36 : 22,
+		bottom: bottom,
 		containLabel: true,
 	}
 }
@@ -456,9 +1425,15 @@ function getTooltip(options: any = {}) {
 		confine: true,
 		appendToBody: false,
 		formatter: (params: Object | Array<Object>) => {
+			if (Array.isArray(params)) {
+				params = params
+					.filter((p) => p.value?.[1] !== 0)
+					.sort((a, b) => b.value?.[1] - a.value?.[1])
+			}
+
 			if (!Array.isArray(params)) {
 				const p = params as any
-				const value = p.value[1]
+				const value = options.xySwapped ? p.value[0] : p.value[1]
 				const formatted = isNaN(value) ? value : formatNumber(value)
 				return `
 					<div class="flex items-center justify-between gap-5">
@@ -469,8 +1444,8 @@ function getTooltip(options: any = {}) {
 			}
 			if (Array.isArray(params)) {
 				const t = params.map((p, idx) => {
-					const xValue = p.value[0]
-					const yValue = p.value[1]
+					const xValue = options.xySwapped ? p.value[1] : p.value[0]
+					const yValue = options.xySwapped ? p.value[0] : p.value[1]
 					const formattedX =
 						options.xAxisIsDate && options.granularity
 							? getFormattedDate(xValue, options.granularity)
@@ -495,13 +1470,18 @@ function getTooltip(options: any = {}) {
 	}
 }
 
-function getLegend(show_legend = true) {
+function getLegend(show_legend = true, show_scrollbar = false, swap_axes = false) {
+	let bottom: string | number = 'bottom'
+	if (show_scrollbar && !swap_axes) {
+		bottom = 32
+	}
+
 	return {
 		show: show_legend,
 		icon: 'circle',
 		type: 'scroll',
 		orient: 'horizontal',
-		bottom: 'bottom',
+		bottom,
 		itemGap: 16,
 		padding: [10, 30],
 		textStyle: { padding: [0, 0, 0, -4] },
@@ -513,66 +1493,13 @@ function getLegend(show_legend = true) {
 	}
 }
 
-export function getDrillDownQuery(chart: Chart, row: QueryResultRow, col: QueryResultColumn) {
-	if (!FIELDTYPES.NUMBER.includes(col.type)) {
-		return
-	}
-
-	const textColumns = chart.dataQuery.result.columns
-		.filter((column) => FIELDTYPES.TEXT.includes(column.type))
-		.map((column) => column.name)
-
-	const dateColumns = chart.dataQuery.result.columns
-		.filter((column) => FIELDTYPES.DATE.includes(column.type))
-		.map((column) => column.name)
-
-	const rowIndex = chart.dataQuery.result.formattedRows.findIndex((r) => r === row)
-	const currRow = chart.dataQuery.result.rows[rowIndex]
-	const nextRow = chart.dataQuery.result.rows[rowIndex + 1]
-
-	const filters: FilterRule[] = []
-	for (const column_name of textColumns) {
-		filters.push({
-			column: column(column_name),
-			operator: '=',
-			value: currRow[column_name] as string,
-		})
-	}
-
-	for (const column_name of dateColumns) {
-		if (nextRow) {
-			filters.push({
-				column: column(column_name),
-				operator: '>=',
-				value: currRow[column_name] as string,
-			})
-			filters.push({
-				column: column(column_name),
-				operator: '<',
-				value: nextRow[column_name] as string,
-			})
-		} else {
-			filters.push({
-				column: column(column_name),
-				operator: '>=',
-				value: currRow[column_name] as string,
-			})
+export function handleOldXAxisConfig(old_x_axis: any): AxisChartConfig['x_axis'] {
+	if (old_x_axis && old_x_axis.column_name) {
+		return {
+			dimension: old_x_axis,
 		}
 	}
-
-	const query = useQuery({ name: getUniqueId(), operations: [] })
-	query.autoExecute = false
-
-	query.setOperations(copy(chart.dataQuery.doc.operations))
-	const summarizeIndex = query.doc.operations.findIndex((op) => op.type === 'summarize')
-	query.doc.operations.splice(summarizeIndex)
-
-	query.addFilterGroup({
-		logical_operator: 'And',
-		filters: filters,
-	})
-
-	return query
+	return old_x_axis
 }
 
 export function handleOldYAxisConfig(old_y_axis: any): AxisChartConfig['y_axis'] {
@@ -582,4 +1509,85 @@ export function handleOldYAxisConfig(old_y_axis: any): AxisChartConfig['y_axis']
 		}
 	}
 	return old_y_axis
+}
+
+// Every chart type reads a fixed set of slots off the config, and the validator and the
+// option builders reach into them without guarding. A type switch replaces the config
+// wholesale, so the incoming type's slots have to exist before anything reads them.
+export function ensureConfigSlots(config: any, chart_type: string) {
+	if (AXIS_CHARTS.includes(chart_type)) {
+		config.x_axis = config.x_axis || {}
+		config.x_axis.dimension = config.x_axis.dimension || {}
+		config.y_axis = config.y_axis || {}
+		config.y_axis.series = config.y_axis.series || []
+	}
+
+	if (chart_type === 'Map') {
+		config.location_column = config.location_column || {}
+		config.value_column = config.value_column || {}
+	}
+
+	return config
+}
+
+export function setDimensionNames(config: any) {
+	const setDimensionName = (dimension: any) => {
+		if (
+			dimension &&
+			typeof dimension === 'object' &&
+			!dimension.dimension_name &&
+			dimension.column_name
+		) {
+			dimension.dimension_name = dimension.column_name
+		}
+		return dimension
+	}
+
+	if (config.x_axis?.dimension) {
+		config.x_axis.dimension = setDimensionName(config.x_axis.dimension)
+	}
+	if (config.split_by?.dimension) {
+		config.split_by.dimension = setDimensionName(config.split_by.dimension)
+	}
+	if (config.date_column) {
+		config.date_column = setDimensionName(config.date_column)
+	}
+	if (config.label_column) {
+		config.label_column = setDimensionName(config.label_column)
+	}
+	if (config.rows && config.rows.length) {
+		config.rows = config.rows.map(setDimensionName)
+	}
+	if (config.columns && config.columns.length) {
+		config.columns = config.columns.map(setDimensionName)
+	}
+	return config
+}
+
+export function getGranularity(dimension_name: string, config: ChartConfig) {
+	if ('x_axis' in config && config.x_axis.dimension.dimension_name === dimension_name) {
+		return config.x_axis.dimension.granularity
+	}
+
+	if ('split_by' in config && config.split_by?.dimension?.dimension_name === dimension_name) {
+		return config.split_by.dimension.granularity
+	}
+
+	if ('date_column' in config && config.date_column?.dimension_name === dimension_name) {
+		return config.date_column.granularity
+	}
+
+	if ('label_column' in config && config.label_column?.dimension_name === dimension_name) {
+		return config.label_column.granularity
+	}
+
+	if ('rows' in config) {
+		const row = config.rows.find((r: any) => r.dimension_name === dimension_name)
+		if (row) return row.granularity
+	}
+
+	if ('columns' in config) {
+		const column = config.columns.find((c: any) => c.dimension_name === dimension_name)
+		if (column) return column.granularity
+	}
 }
