@@ -1,5 +1,11 @@
+import { FilterType } from '../helpers/constants'
 import { ChartConfig, ChartType } from './chart.types'
-import { ColumnDataType, FilterGroupArgs, Measure, Operation, OrderByArgs } from './query.types'
+import { FilterGroupArgs, FilterOperator, FilterValue, Operation, OrderByArgs } from './query.types'
+
+export interface QueryVariable {
+	variable_name: string
+	variable_value: string
+}
 
 export type WorkbookListItem = {
 	title: string
@@ -9,6 +15,40 @@ export type WorkbookListItem = {
 	modified: string
 	created_from_now: string
 	modified_from_now: string
+	views: number
+	shared_with: string[]
+	shared_with_organization?: boolean
+}
+
+export type WorkbookFolder = {
+	name: string
+	title: string
+	type: 'query' | 'chart'
+	sort_order: number
+}
+
+export type WorkbookQuery = {
+	name: string
+	title: string
+	folder?: string | null
+	sort_order: number
+	is_native_query?: boolean
+	is_script_query?: boolean
+	is_builder_query?: boolean
+}
+
+export type WorkbookChart = {
+	name: string
+	title: string
+	query: string
+	chart_type: ChartType
+	folder?: string | null
+	sort_order: number
+}
+
+export type WorkbookDashboard = {
+	name: string
+	title: string
 }
 
 export type InsightsWorkbook = {
@@ -16,42 +56,77 @@ export type InsightsWorkbook = {
 	name: string
 	owner: string
 	title: string
+	folders: WorkbookFolder[]
 	queries: WorkbookQuery[]
 	charts: WorkbookChart[]
 	dashboards: WorkbookDashboard[]
+	read_only: boolean
 }
 
-export type WorkbookQuery = {
+export type InsightsQueryv3 = {
+	doctype: 'Insights Query v3'
 	name: string
-	title?: string
+	owner: string
+	title: string
+	workbook: string
+	operations: Operation[]
+	variables?: QueryVariable[]
+	use_live_connection?: boolean
+	sort_order: number
+	folder?: string | null
+	is_native_query?: boolean
+	is_script_query?: boolean
+	is_builder_query?: boolean
+	read_only: boolean
+}
+
+export type InsightsChartv3 = {
+	doctype: 'Insights Chart v3'
+	name: string
+	owner: string
+	title: string
+	workbook: string
+	query: string
+	data_query: string
+	chart_type: ChartType
+	sort_order: number
+	folder?: string | null
+	is_public: boolean
 	operations: Operation[]
 	use_live_connection?: boolean
-	calculated_measures?: Record<string, Measure>
-}
-
-export type WorkbookChart = {
-	name: string
-	title: string
-	query: string
-	public: boolean
-	chart_type: ChartType
 	config: ChartConfig & {
 		order_by: OrderByArgs[]
 		filters?: FilterGroupArgs
 		limit?: number
 	}
+	read_only: boolean
 }
 
-export type WorkbookDashboard = {
+export type InsightsDashboardv3 = {
+	doctype: 'Insights Dashboard v3'
 	name: string
+	owner: string
 	title: string
+	workbook: string
 	items: WorkbookDashboardItem[]
+	preview_image?: string
+	share_link?: string
+	is_public: boolean
+	is_shared_with_organization: boolean
+	people_with_access: {
+		email: string
+		full_name: string
+		user_image: string
+	}[]
+	read_only: boolean
+	vertical_compact: boolean
+	has_workbook_access: boolean
 }
 
 export type WorkbookDashboardItem =
 	| WorkbookDashboardChart
-	| WorkbookDashboardFilter
 	| WorkbookDashboardText
+	| WorkbookDashboardFilter
 
 export type Layout = {
 	i: string
@@ -67,7 +142,12 @@ export type WorkbookDashboardChart = {
 }
 export type WorkbookDashboardFilter = {
 	type: 'filter'
-	column: DashboardFilterColumn
+	filter_name: string
+	filter_type: FilterType
+	links: Record<string, string>
+	default_operator?: FilterOperator
+	default_value?: FilterValue
+	icon?: string
 	layout: Layout
 }
 export type WorkbookDashboardText = {
@@ -75,11 +155,11 @@ export type WorkbookDashboardText = {
 	text: string
 	layout: Layout
 }
-export type DashboardFilterColumn = {
-	query: string
-	name: string
-	type: ColumnDataType
-}
 
 export type ShareAccess = 'view' | 'edit' | undefined
-export type WorkbookSharePermission = { email: string; full_name: string; access: ShareAccess }
+export type WorkbookSharePermission = {
+	email: string
+	full_name: string
+	user_image?: string
+	access: ShareAccess
+}

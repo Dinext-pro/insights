@@ -5,7 +5,7 @@
 import frappe
 from sqlalchemy import column as Column
 from sqlalchemy import select as Select
-from sqlalchemy import table as Table
+from sqlalchemy import table as Table  # nosemgrep - the "table" assigned to below is a local, not this import
 from sqlalchemy import text
 from sqlalchemy.engine.base import Connection
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
@@ -17,7 +17,7 @@ from .base_database import (
     DatabaseCredentialsError,
     DatabaseParallelConnectionError,
 )
-from .utils import create_insights_table, get_sqlalchemy_engine
+from .utils import CONNECT_TIMEOUT, create_insights_table, get_sqlalchemy_engine
 
 MARIADB_TO_GENERIC_TYPES = {
     "int": "Integer",
@@ -76,9 +76,7 @@ class MariaDBTableFactory:
 
         schema = {}
         for [table_name, column_name, data_type, _] in columns:
-            schema.setdefault(table_name, []).append(
-                self.get_column(column_name, data_type)
-            )
+            schema.setdefault(table_name, []).append(self.get_column(column_name, data_type))
         return schema
 
     def get_column(self, column_name, column_type):
@@ -92,9 +90,7 @@ class MariaDBTableFactory:
 
 
 class MariaDB(BaseDatabase):
-    def __init__(
-        self, data_source, host, port, username, password, database_name, use_ssl, **_
-    ):
+    def __init__(self, data_source, host, port, username, password, database_name, use_ssl, **_):
         self.data_source = data_source
         self.engine = get_sqlalchemy_engine(
             dialect="mysql",
@@ -108,7 +104,7 @@ class MariaDB(BaseDatabase):
             ssl_verify_cert=use_ssl,
             charset="utf8mb4",
             use_unicode=True,
-            connect_args={"connect_timeout": 1},
+            connect_args={"connect_timeout": CONNECT_TIMEOUT},
         )
         self.query_builder: SQLQueryBuilder = SQLQueryBuilder(self.engine)
         self.table_factory: MariaDBTableFactory = MariaDBTableFactory(data_source)
@@ -134,12 +130,8 @@ class MariaDB(BaseDatabase):
             self.table_factory.sync_tables(connection, tables, force)
 
     def get_table_preview(self, table, limit=100):
-        data = self.execute_query(
-            f"""select * from `{table}` limit {limit}""", cached=True
-        )
-        length = self.execute_query(f"""select count(*) from `{table}`""", cached=True)[
-            0
-        ][0]
+        data = self.execute_query(f"""select * from `{table}` limit {limit}""", cached=True)
+        length = self.execute_query(f"""select count(*) from `{table}`""", cached=True)[0][0]
         return {
             "data": data or [],
             "length": length or 0,

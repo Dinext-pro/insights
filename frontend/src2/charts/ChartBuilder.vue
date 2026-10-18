@@ -1,39 +1,41 @@
 <script setup lang="ts">
 import { useMagicKeys, watchDebounced, whenever } from '@vueuse/core'
-import { ImageDown, RefreshCcw } from 'lucide-vue-next'
+import { Badge } from 'frappe-ui'
 import { onBeforeUnmount, provide, ref } from 'vue'
 import InlineFormControlLabel from '../components/InlineFormControlLabel.vue'
-import LoadingOverlay from '../components/LoadingOverlay.vue'
-import { downloadImage } from '../helpers'
-import { WorkbookChart, WorkbookQuery } from '../types/workbook.types'
+import LazyTextInput from '../components/LazyTextInput.vue'
+import { downloadImage, waitUntil } from '../helpers'
+import { DropdownOption } from '../types/query.types'
 import useChart from './chart'
 import ChartBuilderTable from './components/ChartBuilderTable.vue'
+import ChartBuilderToolbar from './components/ChartBuilderToolbar.vue'
 import ChartConfigForm from './components/ChartConfigForm.vue'
 import ChartFilterConfig from './components/ChartFilterConfig.vue'
 import ChartQuerySelector from './components/ChartQuerySelector.vue'
 import ChartRenderer from './components/ChartRenderer.vue'
+import ChartShareDialog from './components/ChartShareDialog.vue'
 import ChartSortConfig from './components/ChartSortConfig.vue'
 import ChartTypeSelector from './components/ChartTypeSelector.vue'
 import CollapsibleSection from './components/CollapsibleSection.vue'
 
-const props = defineProps<{ chart: WorkbookChart; queries: WorkbookQuery[] }>()
+const props = defineProps<{ chart_name: string; queries: DropdownOption[] }>()
 
-const chart = useChart(props.chart)
+const chart = useChart(props.chart_name)
 provide('chart', chart)
+// @ts-ignore
 window.chart = chart
 
-chart.refresh()
-if (chart.doc.query && !chart.baseQuery.result.rows.length) {
-	chart.baseQuery.execute()
-}
+await waitUntil(() => chart.isloaded)
 
+// refresh separately to avoid debounce
+chart.refresh()
 watchDebounced(
 	() => chart.doc.config,
 	() => chart.refresh(),
 	{
 		deep: true,
 		debounce: 500,
-	}
+	},
 )
 
 const keys = useMagicKeys()
@@ -60,43 +62,58 @@ function downloadChart() {
 		},
 	})
 }
+
+const showShareDialog = ref(false)
 </script>
 
 <template>
-	<div v-if="chart" class="relative flex h-full w-full overflow-hidden">
-		<div class="relative flex h-full w-full flex-col overflow-hidden">
-			<LoadingOverlay v-if="chart.dataQuery.executing" />
+	<div class="relative flex h-full w-full overflow-hidden">
+		<div class="relative flex h-full w-full flex-col gap-3 overflow-hidden p-4">
+			<ChartBuilderToolbar
+				v-if="chart.doc.query"
+				:chart="chart"
+				:chartEl="chartEl"
+				:onDownload="downloadChart"
+				:onShare="() => (showShareDialog = true)"
+			/>
 			<div
 				ref="chartEl"
-				class="flex min-h-[24rem] flex-1 flex-shrink-0 items-center justify-center overflow-hidden p-4"
+				class="flex min-h-[24rem] flex-1 flex-shrink-0 items-center justify-center"
 			>
 				<ChartRenderer :chart="chart" />
 			</div>
-			<ChartBuilderTable />
+			<ChartBuilderTable v-if="chart.dataQuery.result.executedSQL" />
 		</div>
 		<div
-			class="relative z-[1] flex w-[17rem] flex-shrink-0 flex-col divide-y overflow-y-auto bg-white shadow"
+			class="relative mt-1 flex w-[19rem] flex-shrink-0 flex-col divide-y overflow-y-auto bg-white px-3.5"
 		>
 			<CollapsibleSection title="Chart">
 				<div class="flex flex-col gap-3">
 					<ChartTypeSelector v-model="chart.doc.chart_type" />
 					<ChartQuerySelector v-model="chart.doc.query" :queries="props.queries" />
 					<InlineFormControlLabel label="Title">
-						<FormControl v-model="chart.doc.title" />
+						<LazyTextInput type="text" placeholder="Title" v-model="chart.doc.title" />
 					</InlineFormControlLabel>
 				</div>
 			</CollapsibleSection>
 
 			<ChartConfigForm v-if="chart.doc.query" :chart="chart" />
 
-			<CollapsibleSection title="Filter" collapsed>
-				<ChartFilterConfig
-					v-model="chart.doc.config.filters"
-					:column-options="chart.baseQuery.result?.columnOptions || []"
-				/>
+			<CollapsibleSection title="Filters" collapsed>
+				<template #title-suffix v-if="chart.doc.config.filters?.filters.length">
+					<Badge size="sm" theme="orange" type="info" class="mt-0.5">
+						<span class="tnum"> {{ chart.doc.config.filters.filters.length }}</span>
+					</Badge>
+				</template>
+				<ChartFilterConfig v-model="chart.doc.config.filters" />
 			</CollapsibleSection>
 
 			<CollapsibleSection title="Sort" collapsed>
+				<template #title-suffix v-if="chart.doc.config.order_by?.length">
+					<Badge size="sm" theme="orange" type="info" class="mt-0.5">
+						<span class="tnum"> {{ chart.doc.config.order_by?.length }}</span>
+					</Badge>
+				</template>
 				<ChartSortConfig
 					v-model="chart.doc.config.order_by"
 					:column-options="chart.dataQuery.result?.columnOptions || []"
@@ -106,24 +123,8 @@ function downloadChart() {
 			<CollapsibleSection title="Limit" collapsed>
 				<FormControl v-model="chart.doc.config.limit" type="number" />
 			</CollapsibleSection>
-
-			<CollapsibleSection title="Actions" class="!border-b">
-				<div class="flex flex-col gap-2">
-					<Button @click="chart.refresh([], true)" class="w-full">
-						<template #prefix>
-							<RefreshCcw class="h-4 text-gray-700" stroke-width="1.5" />
-						</template>
-						Refresh Chart
-					</Button>
-
-					<Button class="w-full" :disabled="!chartEl" @click="downloadChart">
-						<template #prefix>
-							<ImageDown class="h-4 text-gray-700" stroke-width="1.5" />
-						</template>
-						Export as PNG
-					</Button>
-				</div>
-			</CollapsibleSection>
 		</div>
 	</div>
+
+	<ChartShareDialog v-model="showShareDialog" :chart="chart" />
 </template>

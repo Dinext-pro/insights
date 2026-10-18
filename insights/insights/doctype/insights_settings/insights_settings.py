@@ -7,6 +7,17 @@ import os
 import frappe
 from frappe.model.document import Document
 
+# Interactive queries block a web worker and hold a connection on the source DB,
+# so the cap is tuned for a viewer waiting on a dashboard, not for long analytics.
+# Background imports bypass this (see _disable_statement_timeout).
+DEFAULT_MAX_EXECUTION_TIME = 60
+
+
+def get_max_execution_time() -> int:
+    return frappe.db.get_single_value("Insights Settings", "max_execution_time", cache=True) or (
+        DEFAULT_MAX_EXECUTION_TIME
+    )
+
 
 class InsightsSettings(Document):
     # begin: auto-generated types
@@ -19,9 +30,13 @@ class InsightsSettings(Document):
 
         allow_subquery: DF.Check
         allowed_origins: DF.Data | None
+        apply_user_permissions: DF.Check
         auto_execute_query: DF.Check
+        enable_data_store: DF.Check
         enable_permissions: DF.Check
         fiscal_year_start: DF.Date | None
+        max_execution_time: DF.Int
+        max_memory_usage: DF.Int
         max_records_to_sync: DF.Int
         onboarding_complete: DF.Check
         query_result_expiry: DF.Int
@@ -38,7 +53,7 @@ class InsightsSettings(Document):
             sync_site_tables()
 
     @frappe.whitelist()
-    def update_settings(self, settings):
+    def update_settings(self, settings: dict | str):
         settings = frappe.parse_json(settings)
         if hasattr(settings, "auto_execute_query"):
             self.auto_execute_query = settings.auto_execute_query
@@ -72,9 +87,7 @@ def sync_site_tables():
 
 
 def create_site_db_data_source():
-    data_source_fixture_path = frappe.get_app_path(
-        "insights", "fixtures", "insights_data_source.json"
-    )
-    with open(data_source_fixture_path, "r") as f:
+    data_source_fixture_path = frappe.get_app_path("insights", "fixtures", "insights_data_source.json")
+    with open(data_source_fixture_path) as f:
         site_db = json.load(f)[0]
         frappe.get_doc(site_db).insert()

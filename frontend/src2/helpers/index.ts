@@ -1,8 +1,28 @@
 import { watchDebounced } from '@vueuse/core'
+import { __ } from '../translation'
 import domtoimage from 'dom-to-image'
-import { ComputedRef, Ref, watch } from 'vue'
+import { isEqual } from 'es-toolkit'
+import { call, debounce } from 'frappe-ui'
+import { Socket } from 'socket.io-client'
+import {
+	inject,
+	watch,
+	onBeforeUnmount,
+	watch as vueWatch,
+	WatchCallback,
+	WatchSource,
+	WatchStopHandle
+} from 'vue'
+import { getFormattedDate } from '../query/helpers'
 import session from '../session'
-import { DropdownOption, GroupedDropdownOption } from '../types/query.types'
+import {
+	ColumnDataType,
+	DataFormat,
+	DropdownOption,
+	GroupedDropdownOption,
+	QueryResultColumn,
+} from '../types/query.types'
+import { FIELDTYPES } from './constants'
 import { createToast } from './toasts'
 
 export function getUniqueId(length = 8) {
@@ -20,53 +40,68 @@ export function titleCase(str: string) {
 }
 
 export function copy<T>(obj: T) {
+	if (!obj) return obj
 	return JSON.parse(JSON.stringify(obj)) as T
 }
 
-export function wheneverChanges(
-	getter: Ref | ComputedRef | Function,
-	callback: Function,
-	options: any = {}
-) {
-	let prevValue: any
-	function onChange(value: any) {
-		if (areDeeplyEqual(value, prevValue)) return
-		prevValue = value
-		callback(value)
-	}
-	return watchDebounced(getter, onChange, options)
+export function wheneverChanges(source: WatchSource, callback: WatchCallback, options: any = {}) {
+	let preVal: any
+	return watchDebounced(
+		source,
+		(val, _, onCleanup) => {
+			if (isEqual(val, preVal)) return
+			preVal = copy(val)
+			callback(val, preVal, onCleanup)
+		},
+		options
+	)
 }
 
-export function areDeeplyEqual(obj1: any, obj2: any): boolean {
-	if (obj1 === obj2) return true
+export type WatchOptions = {
+	deep?: boolean
+	immediate?: boolean
+	debounce?: number
+	toggleCondition?: () => boolean
+}
+export function watchToggle(source: WatchSource, callback: WatchCallback, options: WatchOptions = {}) {
+	const attachSourceWatcher = () => _watch(source, callback, options)
 
-	if (Array.isArray(obj1) && Array.isArray(obj2)) {
-		if (obj1.length !== obj2.length) return false
-
-		return obj1.every((elem, index) => {
-			return areDeeplyEqual(elem, obj2[index])
-		})
+	if (!options.toggleCondition) {
+		attachSourceWatcher()
+		return
 	}
 
-	if (typeof obj1 === 'object' && typeof obj2 === 'object' && obj1 !== null && obj2 !== null) {
-		if (Array.isArray(obj1) || Array.isArray(obj2)) return false
-
-		const keys1 = Object.keys(obj1)
-		const keys2 = Object.keys(obj2)
-
-		if (keys1.length !== keys2.length || !keys1.every((key) => keys2.includes(key))) return false
-
-		for (let key in obj1) {
-			let isEqual = areDeeplyEqual(obj1[key], obj2[key])
-			if (!isEqual) {
-				return false
+	if (options.toggleCondition) {
+		// only watch if condition is true
+		// stop the watcher if condition is false
+		let watching = false
+		let stop: WatchStopHandle
+		_watch(
+			options.toggleCondition,
+			(shouldWatch) => {
+				if (shouldWatch && !watching) {
+					watching = true
+					stop = attachSourceWatcher()
+				} else if (!shouldWatch && watching) {
+					watching = false
+					stop()
+				}
+			},
+			{
+				immediate: true,
 			}
-		}
+		)
+	}
+}
 
-		return true
+function _watch(source: WatchSource, callback: WatchCallback, options: WatchOptions = {}) {
+	let _callback = callback
+
+	if (options.debounce) {
+		_callback = debounce(_callback, options.debounce)
 	}
 
-	return false
+	return vueWatch(source, _callback, options)
 }
 
 export function waitUntil(fn: () => boolean) {
@@ -94,28 +129,34 @@ export function store<T>(key: string, value: () => T) {
 }
 
 export function getErrorMessage(err: any) {
-	return err.exc?.split('\n').filter(Boolean).at(-1)
+	// the exception line is not always last: DuckDB appends the offending SQL and a caret
+	const lines: string[] = err.exc?.split('\n') ?? []
+	const excLine = lines.filter((line) => /^[\w.]+(Error|Exception): /.test(line)).at(-1)
+	if (!excLine) return err.message || err.toString()
+	const message = excLine.split(': ').slice(1).join(': ')
+	const details = lines.slice(lines.lastIndexOf(excLine) + 1)
+	return [message, ...details].join('\n').trim()
 }
 
 export function showErrorToast(err: Error, raise = true) {
 	createToast({
 		variant: 'error',
-		title: 'Error',
+		title: __('Error'),
 		message: getErrorMessage(err),
 	})
 	if (raise) throw err
 }
 
-export function downloadImage(element: HTMLElement, filename: string, scale = 1, options = {}) {
+export function downloadImage(element: HTMLElement, filename: string, scale = 2, options = {}) {
 	return domtoimage
 		.toPng(element, {
-			height: element.offsetHeight * scale,
-			width: element.offsetWidth * scale,
+			height: element.scrollHeight * scale,
+			width: element.scrollWidth * scale,
 			style: {
 				transform: 'scale(' + scale + ')',
 				transformOrigin: 'top left',
-				width: element.offsetWidth + 'px',
-				height: element.offsetHeight + 'px',
+				width: element.scrollWidth + 'px',
+				height: element.scrollHeight + 'px',
 			},
 			bgColor: 'white',
 			...options,
@@ -132,22 +173,50 @@ export function downloadImage(element: HTMLElement, filename: string, scale = 1,
 		})
 }
 
-export function formatNumber(number: number, precision = 2) {
+export function formatNumber(number: number, precision = 0) {
 	if (isNaN(number)) return number
 	precision = precision || guessPrecision(number)
 	const locale = session.user?.country == 'India' ? 'en-IN' : session.user?.locale
 	return new Intl.NumberFormat(locale || 'en-US', {
+		minimumFractionDigits: precision,
 		maximumFractionDigits: precision,
 	}).format(number)
 }
 
+export type FormatUnits = {
+	// what the stored number must be multiplied by to reach the printed one
+	scale: number
+	prefix: string
+	suffix: string
+}
+
+const NO_UNITS: FormatUnits = { scale: 1, prefix: '', suffix: '' }
+
+// A measure states its unit once, and every reading of it prints that unit the
+// same way. The symbol sits where fmt_money puts it, so Insights and desk agree.
+export function getFormatUnits(format?: DataFormat, code?: string | null): FormatUnits {
+	if (format === 'percent') {
+		return { scale: 100, prefix: '', suffix: '%' }
+	}
+	if (format !== 'currency') return NO_UNITS
+
+	const resolved = code === undefined ? session.site?.currency : code
+	const currency = resolved ? session.site?.currency_symbols?.[resolved] : undefined
+	if (!currency?.symbol) return NO_UNITS
+	return currency.symbol_on_right
+		? { scale: 1, prefix: '', suffix: ` ${currency.symbol}` }
+		: { scale: 1, prefix: `${currency.symbol} `, suffix: '' }
+}
+
 export function guessPrecision(number: number) {
+	if (!number || isNaN(number)) return 0
 	// eg. 1.0 precision = 1, 1.00 precision = 2
 	const str = number.toString()
 	const decimalIndex = str.indexOf('.')
 	if (decimalIndex === -1) return 0
 	return Math.min(str.length - decimalIndex - 1, 2)
 }
+
 
 export function getShortNumber(number: number, precision = 0) {
 	const locale = session.user?.country == 'India' ? 'en-IN' : session.user?.locale
@@ -202,43 +271,36 @@ export function safeJSONParse(str: string, defaultValue = null) {
 		console.error(e)
 		console.groupEnd()
 		createToast({
-			message: 'Error parsing JSON',
+			message: __('Error parsing JSON'),
 			variant: 'error',
 		})
 		return defaultValue
 	}
 }
 
-export function copyToClipboard(text: string) {
-	if (navigator.clipboard) {
-		navigator.clipboard.writeText(text)
-		createToast({
-			variant: 'success',
-			title: 'Copied to clipboard',
-		})
-	} else {
-		// try to use execCommand
-		const textArea = document.createElement('textarea')
-		textArea.value = text
-		textArea.style.position = 'fixed'
-		document.body.appendChild(textArea)
-		textArea.focus()
-		textArea.select()
-		try {
-			document.execCommand('copy')
-			createToast({
-				variant: 'success',
-				title: 'Copied to clipboard',
-			})
-		} catch (err) {
-			createToast({
-				variant: 'error',
-				title: 'Copy to clipboard not supported',
-			})
-		} finally {
-			document.body.removeChild(textArea)
-		}
+export function copyToClipboard(text: string | Promise<string>) {
+	if (text instanceof Promise) {
+		// Safari blocks clipboard access if called after an async operation
+		// fix: use call ClipboardItem synchronously but with the text as a promise
+		const blob = text.then((t) => new Blob([t], { type: 'text/plain' }))
+		navigator.clipboard
+			.write([new ClipboardItem({ 'text/plain': blob })])
+			.then(() => showCopyToast(true))
+			.catch(() => showCopyToast(false))
+		return
 	}
+
+	navigator.clipboard
+		.writeText(text)
+		.then(() => showCopyToast(true))
+		.catch(() => showCopyToast(false))
+}
+
+function showCopyToast(success: boolean) {
+	createToast({
+		variant: success ? 'success' : 'error',
+		title: success ? __('Copied to clipboard') : __('Failed to copy to clipboard'),
+	})
 }
 
 export function ellipsis(value: string, length: number) {
@@ -251,7 +313,243 @@ export function ellipsis(value: string, length: number) {
 export function flattenOptions(
 	options: DropdownOption[] | GroupedDropdownOption[]
 ): DropdownOption[] {
+	if (!options.length) return []
 	return 'group' in options[0]
 		? (options as GroupedDropdownOption[]).map((c) => c.items).flat()
 		: (options as DropdownOption[])
+}
+
+export function groupOptions<T extends DropdownOption>(
+	options: T[],
+	groupBy: keyof T
+): GroupedDropdownOption[] {
+	return options.reduce((acc, option) => {
+		const group = option[groupBy] as string
+		const index = acc.findIndex((g) => g.group === group)
+		if (index === -1) {
+			acc.push({ group, items: [option] })
+		} else {
+			acc[index].items.push(option)
+		}
+		return acc
+	}, [] as GroupedDropdownOption[])
+}
+
+export function scrub(text: string, spacer = '_') {
+	return text.replace(/ /g, spacer).toLowerCase()
+}
+
+type OptionKey = keyof DropdownOption
+export function toOptions(arr: any[], map: Record<OptionKey, string>) {
+	return arr.map((item) => {
+		Object.keys(map).forEach((key) => {
+			// @ts-ignore
+			item[key] = item[map[key]]
+		})
+		return item
+	})
+}
+
+export function sanitizeColumnName(name: string) {
+	return name
+		? name
+				.trim()
+				.replace(' ', '_')
+				.replace('-', '_')
+				.replace('.', '_')
+				.replace('/', '_')
+				.replace('(', '_')
+				.replace(')', '_')
+				.toLowerCase()
+		: name
+}
+
+export function isDate(data_type: ColumnDataType) {
+	return FIELDTYPES.DATE.includes(data_type)
+}
+
+export function isNumber(data_type: ColumnDataType) {
+	return FIELDTYPES.NUMBER.includes(data_type)
+}
+
+export function isString(data_type: ColumnDataType) {
+	return FIELDTYPES.TEXT.includes(data_type)
+}
+
+export function attachRealtimeListener(event: string, callback: (...args: any[]) => void) {
+	const $socket = inject<Socket>('$socket')!
+	$socket.on(event, callback)
+	onBeforeUnmount(() => {
+		$socket.off(event)
+	})
+}
+
+export function createHeaders(columns: QueryResultColumn[]) {
+	const nestedColumns = columns.filter((column) => column.name.includes('___'))
+	const levels = nestedColumns.length ? nestedColumns[0].name.split('___').length : 1
+
+	const _columns = columns.map((column) => {
+		return {
+			...column,
+			isNested: column.name.includes('___'),
+			// ibis returns nested columns as value1___column1, value2___column1, value3___column1
+			// using the columns as it is will show the value1 on the top and column1, column2, column3 as nested columns
+			// so we reverse the parts to show column1 on the top and value1, value2, value3 as nested columns
+			parts: column.name.split('___').reverse(),
+		}
+	})
+
+	const headers = []
+
+	for (let level = 0; level < levels; level++) {
+		const headerRow = []
+
+		for (let column of _columns) {
+			const isNested = column.isNested
+			const isLast = level === levels - 1
+
+			headerRow.push({
+				label: isNested ? column.parts[level] : isLast ? column.name : '',
+				level,
+				isLast,
+				column: column,
+			})
+		}
+
+		headers.push(headerRow)
+	}
+
+	const groupedHeaders = []
+
+	for (let headerRow of headers) {
+		const groupedHeaderRow = []
+
+		let currentHeader = headerRow[0]
+		let currentColspan = 1
+
+		for (let i = 1; i < headerRow.length; i++) {
+			const header = headerRow[i]
+
+			if (header.label === currentHeader.label) {
+				currentColspan++
+			} else {
+				groupedHeaderRow.push({
+					...currentHeader,
+					colspan: currentColspan,
+				})
+				currentHeader = header
+				currentColspan = 1
+			}
+		}
+
+		groupedHeaderRow.push({
+			...currentHeader,
+			colspan: currentColspan,
+		})
+
+		groupedHeaders.push(groupedHeaderRow)
+	}
+
+	// if header rows have items with values like: 2016-10-01, 2016-11-01, 2016-12-01
+	// i.e first day of each month, then we format the values as 'Oct 2016', 'Nov 2016', 'Dec 2016'
+
+	for (let headerRow of groupedHeaders) {
+		const areDates = areValidDates(headerRow.map((header) => header.label))
+		if (!areDates) continue
+
+		const areFirstOfFiscalYear = areFirstDayOfFiscalYear(headerRow.map((header) => header.label))
+		const areFirstOfYear = areFirstDayOfYear(headerRow.map((header) => header.label))
+		const areFirstOfMonth = areFirstDayOfMonth(headerRow.map((header) => header.label))
+
+		for (let header of headerRow) {
+			if (!isValidDate(header.label)) continue
+
+			if (areFirstOfFiscalYear) {
+				header.label = getFormattedDate(header.label, 'fiscal_year')
+			} else if (areFirstOfYear) {
+				header.label = getFormattedDate(header.label, 'year')
+			} else if (areFirstOfMonth) {
+				header.label = getFormattedDate(header.label, 'month')
+			} else if (areDates) {
+				header.label = getFormattedDate(header.label, 'day')
+			}
+		}
+	}
+
+	return groupedHeaders
+}
+
+function areFirstDayOfFiscalYear(data: string[]) {
+	const fiscalYearStart = session.user?.fiscal_year_start
+	if (!fiscalYearStart) return false
+
+	const start = new Date(fiscalYearStart)
+	const fiscalStartMonth = start.getMonth()
+	const fiscalStartDay = start.getDate()
+
+	// when the fiscal year aligns with the calendar year, defer to year formatting
+	if (fiscalStartMonth === 0 && fiscalStartDay === 1) return false
+
+	const firstDayOfFiscalYear = (date: string) => {
+		const d = new Date(date)
+		return d.getMonth() === fiscalStartMonth && d.getDate() === fiscalStartDay
+	}
+	return data.map(firstDayOfFiscalYear).filter(Boolean).length / data.length >= 0.5
+}
+
+function areFirstDayOfMonth(data: string[]) {
+	const firstDayOfMonth = (date: string) => new Date(date).getDate() === 1
+	return data.map(firstDayOfMonth).filter(Boolean).length / data.length >= 0.5
+}
+
+function areFirstDayOfYear(data: string[]) {
+	const firstDayOfYear = (date: string) =>
+		new Date(date).getMonth() === 0 && new Date(date).getDate() === 1
+	return data.map(firstDayOfYear).filter(Boolean).length / data.length >= 0.5
+}
+
+function areValidDates(data: string[]) {
+	return data.map(isValidDate).filter(Boolean).length / data.length >= 0.5
+}
+
+function isValidDate(value: string) {
+	// almost all dates will have a valid 4 digit year
+	if (!value) return false
+	if (!/\d{4}/.test(value)) return false
+	const date = new Date(value)
+	return !isNaN(date.getTime()) && date.getFullYear() >= 1900 && date.getFullYear() <= 2900
+}
+
+const callCache = new Map<string, any>()
+export function cachedCall(url: string, options?: any): Promise<any> {
+	// a function that makes a fetch call, but also caches the response for the same url & options
+	const key = JSON.stringify({ url, options })
+	if (callCache.has(key)) {
+		return Promise.resolve(callCache.get(key))
+	}
+
+	return call(url, options)
+		.then((response: any) => {
+			callCache.set(key, response)
+			return response
+		})
+		.catch((err: Error) => {
+			callCache.delete(key)
+			throw err
+		})
+}
+
+export function toTitleCase(str: string): string {
+	if (!str) return str
+
+	return str
+		.replace(/&/g, 'and')
+		.toLowerCase()
+		.split(' ')
+		.map(word => {
+			if (word === 'and') return 'and'
+			return word.charAt(0).toUpperCase() + word.slice(1)
+		})
+		.join(' ')
+		.trim()
 }

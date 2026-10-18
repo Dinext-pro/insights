@@ -1,11 +1,8 @@
-from typing import List
-
 import frappe
 from frappe import _dict
-from sqlalchemy import Column, TextClause
+from sqlalchemy import TextClause, select, table
 from sqlalchemy import column as sa_column
-from sqlalchemy import select, table
-from sqlalchemy.sql import and_, func, text
+from sqlalchemy.sql import and_
 
 from insights.insights.doctype.insights_query.utils import Column as AssistedQueryColumn
 from insights.insights.doctype.insights_query.utils import Filter as AssistedQueryFilter
@@ -43,15 +40,16 @@ class SQLQueryBuilder:
         if not assisted_query or not assisted_query.is_valid():
             return ""
 
-        query = ""
+        self.data_source = query.data_source
+        q = ""
         frappe.flags._current_query_dialect = self.engine.dialect
         try:
             self._process(assisted_query)
-            query = self._build(assisted_query)
-            query = self.compile_query(query)
+            q = self._build(assisted_query)
+            q = self.compile_query(q)
         finally:
             frappe.flags._current_query_dialect = None
-        return query
+        return q
 
     def _process(self, assisted_query: AssistedQuery):
         self._tables = {}
@@ -69,7 +67,7 @@ class SQLQueryBuilder:
 
         self._limit = assisted_query.limit or None
 
-    def process_joins(self, joins: List[AssistedQueryJoin]):
+    def process_joins(self, joins: list[AssistedQueryJoin]):
         if not joins:
             return
         for join in joins:
@@ -80,12 +78,8 @@ class SQLQueryBuilder:
                     left=self.make_table(join.left_table.table),
                     right=self.make_table(join.right_table.table),
                     type=join.join_type.value,
-                    left_key=self.make_column(
-                        join.left_column.column, join.left_table.table
-                    ),
-                    right_key=self.make_column(
-                        join.right_column.column, join.right_table.table
-                    ),
+                    left_key=self.make_column(join.left_column.column, join.left_table.table),
+                    right_key=self.make_column(join.right_column.column, join.right_table.table),
                 )
             )
 
@@ -105,7 +99,7 @@ class SQLQueryBuilder:
 
         return _column.label(column.alias)
 
-    def process_filters(self, filters: List[AssistedQueryFilter]):
+    def process_filters(self, filters: list[AssistedQueryFilter]):
         if not filters:
             return
 
@@ -129,9 +123,7 @@ class SQLQueryBuilder:
             elif "set" in operator:  # is set, is not set
                 _filter = call_function(operator, _column)
             elif operator == "is":
-                operator_fn = (
-                    "is_set" if filter_value.lower() == "set" else "is_not_set"
-                )
+                operator_fn = "is_set" if filter_value.lower() == "set" else "is_not_set"
                 _filter = call_function(operator_fn, _column)
             elif operator == "between":
                 from_to = filter_value.split(",")
@@ -149,7 +141,7 @@ class SQLQueryBuilder:
         if _filters:
             self._filters = and_(*_filters)
 
-    def process_columns(self, columns: List[AssistedQueryColumn]):
+    def process_columns(self, columns: list[AssistedQueryColumn]):
         for column in columns:
             if not column.is_valid():
                 continue
@@ -159,9 +151,7 @@ class SQLQueryBuilder:
                 self._dimensions.append(self.process_column(column))
             if column.order:
                 _column = self.process_column(column)
-                self._order_by_columns.append(
-                    _column.asc() if column.order == "asc" else _column.desc()
-                )
+                self._order_by_columns.append(_column.asc() if column.order == "asc" else _column.desc())
 
     def quote_identifier(self, identifier):
         return self.engine.dialect.identifier_preparer.quote_identifier(identifier)
@@ -172,7 +162,8 @@ class SQLQueryBuilder:
 
         columns = self._dimensions + self._measures
         if not columns:
-            columns = [text(f"{self.quote_identifier(main_table.name)}.*")]
+            star = sa_column("*", is_literal=True, _selectable=main_table)
+            columns = [star]
 
         query = select(*columns).select_from(main_table)
         for join in self._joins:
@@ -200,7 +191,24 @@ class SQLQueryBuilder:
 
     def make_table(self, name):
         if name not in self._tables:
-            self._tables[name] = table(name).alias(name)
+            if (
+                name
+                and self.data_source == "Site DB"
+                and frappe.db.get_single_value("Insights Settings", "apply_user_permissions", cache=True)
+            ):
+                t = table(name)
+                star = sa_column("*", is_literal=True, _selectable=t)
+                t_name = sa_column("name", _selectable=t)
+                doctype = name.replace("tab", "")
+                allowed_names = get_allowed_documents(doctype)
+                if not allowed_names:
+                    self._tables[name] = select(star).where(t_name.is_(None)).cte(name)
+                elif allowed_names == "*":
+                    self._tables[name] = t.alias(name)
+                else:
+                    self._tables[name] = select(star).where(t_name.in_(allowed_names)).cte(name)
+            else:
+                self._tables[name] = table(name).alias(name)
         return self._tables[name]
 
     def make_column(self, columnname, tablename):
@@ -212,9 +220,7 @@ class SQLQueryBuilder:
         try:
             raw = process_raw_expression(raw_expression)
             eval_globals = get_eval_globals()
-            eval_globals["column"] = lambda table, column: self.make_column(
-                column, table
-            )
+            eval_globals["column"] = lambda table, column: self.make_column(column, table)
             return frappe.safe_eval(raw, eval_globals=eval_globals)
         except Exception as e:
             raise Exception(f"Invalid expression {raw} - {e}")
@@ -224,3 +230,58 @@ class SQLQueryBuilder:
             dialect=self.engine.dialect,
             compile_kwargs={"literal_binds": True},
         )
+
+
+def get_allowed_documents(doctype):
+    istable = frappe.get_meta(doctype).istable
+
+    if not istable:
+        if not frappe.has_permission(doctype, "read"):
+            return []
+        docs = frappe.get_list(doctype, pluck="name")
+        if frappe.db.count(doctype) == len(docs):
+            return "*"
+        return docs
+
+    if istable:
+        child_doctype = doctype
+        parent_doctypes = _get_parent_doctypes(child_doctype)
+        permitted_parents = [p for p in parent_doctypes if frappe.has_permission(p, "read")]
+
+        if not permitted_parents:
+            return []
+
+        all_names = []
+        for parent_doctype in permitted_parents:
+            names = frappe.get_list(child_doctype, parent_doctype=parent_doctype, pluck="name")
+            all_names.extend(names)
+
+        docs = list(set(all_names))
+        if frappe.db.count(doctype) == len(docs):
+            return "*"
+        return docs
+
+    return []
+
+
+def _get_parent_doctypes(child_doctype):
+    parent_doctypes = frappe.get_all(
+        "DocField",
+        filters={
+            "parenttype": "DocType",
+            "fieldtype": ["in", ["Table", "Table MultiSelect"]],
+            "options": child_doctype,
+        },
+        pluck="parent",
+        distinct=True,
+    )
+    custom_parent_doctypes = frappe.get_all(
+        "Custom Field",
+        filters={
+            "fieldtype": ["in", ["Table", "Table MultiSelect"]],
+            "options": child_doctype,
+        },
+        pluck="dt",
+        distinct=True,
+    )
+    return list(set(parent_doctypes + custom_parent_doctypes))

@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { Check, PanelRightClose, PanelRightOpen, Share2, Undo2 } from 'lucide-vue-next'
+import { GitFork, Share2 } from 'lucide-vue-next'
 import { inject, ref } from 'vue'
+import session from '../session'
+import { __ } from '../translation'
 import { Workbook, workbookKey } from './workbook'
+import WorkbookLineageDialog from './WorkbookLineageDialog.vue'
 import WorkbookShareDialog from './WorkbookShareDialog.vue'
 
 const workbook = inject(workbookKey) as Workbook
 
 const showShareDialog = ref(false)
+const showLineageDialog = ref(false)
 </script>
 
 <template>
@@ -21,7 +25,7 @@ const showShareDialog = ref(false)
 			</template>
 			Share
 		</Button>
-		<Button
+		<!-- <Button
 			v-show="!workbook.islocal && workbook.isdirty"
 			variant="outline"
 			@click="workbook.discard()"
@@ -41,20 +45,40 @@ const showShareDialog = ref(false)
 				<Check class="h-4 w-4 text-gray-100" stroke-width="1.5" />
 			</template>
 			Save
-		</Button>
+		</Button> -->
 		<Dropdown
 			:button="{ icon: 'more-horizontal', variant: 'outline' }"
+			placement="right"
 			:options="[
 				{
-					label: workbook.showSidebar ? 'Hide Sidebar' : 'Show Sidebar',
-					icon: workbook.showSidebar ? PanelRightOpen : PanelRightClose,
-					onClick: () => (workbook.showSidebar = !workbook.showSidebar),
+					label: __('View Lineage'),
+					icon: GitFork,
+					onClick: () => (showLineageDialog = true),
+				},
+				!workbook.doc.read_only
+					? {
+							label: __('Duplicate'),
+							icon: 'copy',
+							onClick: () => workbook.duplicate(),
+					  }
+					: null,
+				{
+					label: __('Copy JSON'),
+					icon: 'copy',
+					onClick: () => workbook.copy(),
 				},
 				!workbook.islocal
 					? {
-							label: 'Delete',
+							label: __('Delete'),
 							icon: 'trash-2',
 							onClick: () => workbook.delete(),
+					  }
+					: null,
+				session.user.has_desk_access
+					? {
+							label: __('Open in Desk'),
+							icon: 'external-link',
+							onClick: () => workbook.openInDesk(),
 					  }
 					: null,
 			]"
@@ -62,4 +86,5 @@ const showShareDialog = ref(false)
 	</div>
 
 	<WorkbookShareDialog v-if="workbook.canShare && showShareDialog" v-model="showShareDialog" />
+	<WorkbookLineageDialog v-if="showLineageDialog" v-model="showLineageDialog" />
 </template>

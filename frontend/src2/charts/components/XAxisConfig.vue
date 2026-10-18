@@ -1,43 +1,55 @@
 <script setup lang="ts">
-import InlineFormControlLabel from '../../components/InlineFormControlLabel.vue'
-import { FIELDTYPES, granularityOptions } from '../../helpers/constants'
+import { watchEffect } from 'vue'
 import { AxisChartConfig } from '../../types/chart.types'
-import { DimensionOption } from './ChartConfigForm.vue'
+import { Dimension, DimensionOption } from '../../types/query.types'
 import CollapsibleSection from './CollapsibleSection.vue'
+import DimensionPicker from './DimensionPicker.vue'
 
-const props = defineProps<{ dimensions: DimensionOption[] }>()
+const props = defineProps<{ dimensions: DimensionOption[]; showRotateLabels?: boolean }>()
 const x_axis = defineModel<AxisChartConfig['x_axis']>({
 	required: true,
 	default: () => ({}),
+})
+
+watchEffect(() => {
+	if (!x_axis.value) {
+		x_axis.value = {
+			dimension: {} as Dimension,
+		}
+	}
+	if (!x_axis.value.dimension) {
+		x_axis.value.dimension = {} as Dimension
+	}
 })
 </script>
 
 <template>
 	<CollapsibleSection title="X Axis">
 		<div class="flex flex-col gap-3 pt-1">
-			<InlineFormControlLabel label="Column">
-				<Autocomplete
-					placeholder="Select a column"
-					:showFooter="true"
-					:options="props.dimensions"
-					:modelValue="x_axis.column_name"
-					@update:modelValue="x_axis = $event || {}"
-				/>
-			</InlineFormControlLabel>
-			<InlineFormControlLabel
-				v-if="FIELDTYPES.DATE.includes(x_axis.data_type)"
-				label="Granularity"
-			>
-				<Autocomplete
-					:hide-search="true"
-					:options="granularityOptions"
-					:model-value="x_axis.granularity"
-					@update:model-value="x_axis.granularity = $event?.value || 'month'"
-				/>
-			</InlineFormControlLabel>
-			<InlineFormControlLabel label="Axis Label">
+			<DimensionPicker
+				label="Column"
+				:options="props.dimensions"
+				:modelValue="x_axis.dimension"
+				@update:modelValue="x_axis.dimension = $event || {}"
+				@remove="x_axis.dimension = {} as Dimension"
+			/>
+			<FormControl
+				label="Rotate Values"
+				type="select"
+				v-model="x_axis.label_rotation"
+				:options="[
+					{ label: '0°', value: 0 },
+					{ label: '30°', value: 30 },
+					{ label: '45°', value: 45 },
+					{ label: '60°', value: 60 },
+					{ label: '75°', value: 75 },
+					{ label: '90°', value: 90 },
+				]"
+			/>
+			<!-- <Toggle label="Show Axis Title" />
+			<InlineFormControlLabel v-if="false" label="Axis Title Text">
 				<FormControl />
-			</InlineFormControlLabel>
+			</InlineFormControlLabel> -->
 		</div>
 	</CollapsibleSection>
 </template>

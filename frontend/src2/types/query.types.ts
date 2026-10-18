@@ -1,3 +1,5 @@
+import { GranularityType } from "../helpers/constants";
+
 export type TableArgs = { type: 'table'; data_source: string; table_name: string }
 export type QueryTableArgs = {
 	type: 'query'
@@ -16,17 +18,24 @@ export type ColumnMeasure = {
 	column_name: string
 	data_type: MeasureDataType
 	aggregation: AggregationType
+	format?: DataFormat
+	currency_column?: string
 }
 export type ExpressionMeasure = {
 	measure_name: string
 	expression: Expression
 	data_type: MeasureDataType
+	format?: DataFormat
+	currency_column?: string
 }
+export type MeasureOption = Measure & { label: string; value: string }
 export type Dimension = {
+	dimension_name: string
 	column_name: string
 	data_type: DimensionDataType
 	granularity?: GranularityType
 }
+export type DimensionOption = Dimension & { label: string; value: string }
 
 export type ColumnDataType =
 	| 'String'
@@ -36,11 +45,13 @@ export type ColumnDataType =
 	| 'Datetime'
 	| 'Time'
 	| 'Text'
+	| 'JSON'
+	| 'Array'
+	| 'Auto'
 export type MeasureDataType = 'String' | 'Integer' | 'Decimal'
 export type DimensionDataType = 'String' | 'Date' | 'Datetime' | 'Time'
 export const aggregations = ['sum', 'count', 'avg', 'min', 'max', 'count_distinct']
 export type AggregationType = (typeof aggregations)[number]
-export type GranularityType = 'day' | 'week' | 'month' | 'quarter' | 'year'
 export type DataFormat = 'currency' | 'percent'
 
 export type FilterOperator =
@@ -66,6 +77,18 @@ export type Expression = {
 	expression: string
 }
 
+export interface RelativeDateParts {
+	span: string
+	interval: string
+	intervalType: string
+	includeCurrent: boolean
+}
+
+export const SPAN_OPTIONS = ['Last', 'Current', 'Next']
+export const INTERVAL_TYPE_OPTIONS = [
+	'Day', 'Week', 'Month', 'Quarter', 'Year', 'Fiscal Year'
+]
+
 export type SourceArgs = { table: Table }
 export type Source = { type: 'source' } & SourceArgs
 
@@ -81,6 +104,7 @@ export type Filter = { type: 'filter' } & FilterArgs
 
 export type FilterGroupArgs = { logical_operator: LogicalOperator; filters: FilterArgs[] }
 export type FilterGroup = { type: 'filter_group' } & FilterGroupArgs
+export type AdhocFilters = Record<string, FilterGroup>
 
 export type SelectArgs = { column_names: string[] }
 export type Select = { type: 'select' } & SelectArgs
@@ -112,11 +136,21 @@ export type Union = { type: 'union' } & UnionArgs
 export type MutateArgs = { new_name: string; data_type: ColumnDataType; expression: Expression }
 export type Mutate = { type: 'mutate' } & MutateArgs
 
+export type SQLColumnArgs = {
+	new_name: string
+	data_type: ColumnDataType
+	raw_sql: string
+	data_source: string
+}
+export type SQLColumn = { type: 'sql_column' } & SQLColumnArgs
+
 export type SummarizeArgs = { measures: Measure[]; dimensions: Dimension[] }
 export type Summarize = { type: 'summarize' } & SummarizeArgs
 
 export type OrderByArgs = { column: Column; direction: 'asc' | 'desc' }
 export type OrderBy = { type: 'order_by' } & OrderByArgs
+export type SortDirection = 'asc' | 'desc' | ''
+export type SortOrder = Record<string, SortDirection>
 
 export type Limit = { type: 'limit'; limit: number }
 
@@ -133,11 +167,18 @@ export type PivotWiderArgs = {
 	rows: Dimension[]
 	columns: Dimension[]
 	values: Measure[]
+	max_column_values?: number
 }
 export type PivotWider = { type: 'pivot_wider' } & PivotWiderArgs
 
 export type CustomOperationArgs = { expression: Expression }
 export type CustomOperation = { type: 'custom_operation' } & CustomOperationArgs
+
+export type SQLArgs = { raw_sql: string, data_source: string }
+export type SQL = { type: 'sql' } & SQLArgs
+
+export type CodeArgs = { code: string }
+export type Code = { type: 'code' } & CodeArgs
 
 export type Operation =
 	| Source
@@ -150,16 +191,20 @@ export type Operation =
 	| Join
 	| Union
 	| Mutate
+	| SQLColumn
 	| Summarize
 	| OrderBy
 	| Limit
 	| PivotWider
 	| CustomOperation
+	| SQL
+	| Code
 
 export type QueryResultRow = Record<string, any>
 export type QueryResultColumn = {
 	name: string
 	type: ColumnDataType
+	hidden?: boolean
 }
 
 export type DropdownOption = {
@@ -176,6 +221,7 @@ export type GroupedDropdownOption = {
 export type ColumnOption = DropdownOption & {
 	query: string
 	data_type: ColumnDataType
+	is_measure?: boolean
 }
 
 export type GroupedColumnOption = {
@@ -190,4 +236,6 @@ export type QueryResult = {
 	formattedRows: QueryResultRow[]
 	columns: QueryResultColumn[]
 	columnOptions: ColumnOption[]
+	timeTaken: number
+	lastExecutedAt: Date
 }

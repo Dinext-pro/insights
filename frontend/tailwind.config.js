@@ -1,7 +1,8 @@
-const plugin = require('tailwindcss/plugin')
+import containerQueries from '@tailwindcss/container-queries'
+import frappeUIPreset from 'frappe-ui/tailwind'
 
-module.exports = {
-	presets: [require('frappe-ui/src/utils/tailwind.config')],
+export default {
+	presets: [frappeUIPreset],
 	content: [
 		'./index.html',
 		'./src/**/*.{vue,js,ts,jsx,tsx}',
@@ -31,22 +32,5 @@ module.exports = {
 			},
 		},
 	},
-	plugins: [
-		plugin(function ({ addUtilities }) {
-			addUtilities({
-				'.scrollbar-hide': {
-					/* IE and Edge */
-					'-ms-overflow-style': 'none',
-
-					/* Firefox */
-					'scrollbar-width': 'none',
-
-					/* Safari and Chrome */
-					'&::-webkit-scrollbar': {
-						display: 'none',
-					},
-				},
-			})
-		}),
-	],
+	plugins: [containerQueries],
 }

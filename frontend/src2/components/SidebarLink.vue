@@ -1,11 +1,15 @@
 <template>
-	<button
+	<component
+		:is="to ? 'router-link' : 'div'"
 		class="flex h-7 cursor-pointer items-center rounded text-gray-800 duration-300 ease-in-out focus:outline-none focus:transition-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-gray-400"
 		:class="isActive ? 'bg-white shadow-sm' : 'hover:bg-gray-100'"
-		@click="handleClick"
+		v-bind="{
+			to: to ? { name: to } : null,
+			onClick: to ? null : handleClick,
+		}"
 	>
 		<div
-			class="flex items-center duration-300 ease-in-out"
+			class="flex items-center overflow-hidden duration-300 ease-in-out"
 			:class="isCollapsed ? 'p-1' : 'px-2 py-1'"
 		>
 			<Tooltip :text="label" placement="right">
@@ -20,15 +24,17 @@
 				</slot>
 			</Tooltip>
 			<span
-				class="flex-shrink-0 text-base duration-300 ease-in-out"
+				class="flex-1 flex-shrink-0 text-base duration-300 ease-in-out"
 				:class="
-					isCollapsed ? 'ml-0 w-0 overflow-hidden opacity-0' : 'ml-2 w-auto opacity-100'
+					isCollapsed
+						? 'ml-0 w-0 overflow-hidden opacity-0'
+						: 'ml-2 w-auto truncate opacity-100'
 				"
 			>
 				{{ label }}
 			</span>
 		</div>
-	</button>
+	</component>
 </template>
 
 <script setup lang="ts">
@@ -41,6 +47,7 @@ const props = defineProps<{
 	label: string
 	to?: string
 	isCollapsed?: boolean
+	isActive?: boolean
 }>()
 
 function handleClick() {
@@ -48,6 +55,6 @@ function handleClick() {
 }
 
 let isActive = computed(() => {
-	return router.currentRoute.value.name === props.to
+	return router.currentRoute.value.name === props.to || props.isActive
 })
 </script>

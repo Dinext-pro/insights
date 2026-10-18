@@ -1,62 +1,85 @@
 <script setup lang="ts">
-import { LayoutPanelTop, Table2 } from 'lucide-vue-next'
-import { inject } from 'vue'
-import ChartIcon from '../charts/components/ChartIcon.vue'
+import { Braces, LayoutPanelTop, ScrollText, Table2 } from 'lucide-vue-next'
+import { __ } from '../translation'
+import { computed, inject } from 'vue'
+import { useRoute } from 'vue-router'
 import WorkbookSidebarListSection from './WorkbookSidebarListSection.vue'
-import { Workbook, workbookKey } from './workbook'
+import WorkbookSidebarFolders from './WorkbookSidebarFolders.vue'
+import { workbookKey } from './workbook'
+import ChartIcon from '../charts/components/ChartIcon.vue'
 
-const workbook = inject(workbookKey) as Workbook
+const workbook = inject(workbookKey)!
+const route = useRoute()
+
+const activeQueryName = computed(() => {
+	if (route.name === 'WorkbookQuery') {
+		const query_name = route.params.query_name as string
+		return workbook.doc.queries.find((query) => query.name === query_name)?.name
+	}
+})
 </script>
 
 <template>
 	<div
 		v-if="workbook"
-		class="relative z-[1] flex h-full w-[17rem] flex-shrink-0 flex-col overflow-y-auto bg-white shadow"
+		class="relative flex h-full w-[17rem] flex-shrink-0 flex-col overflow-y-auto bg-white"
 	>
-		<WorkbookSidebarListSection
+		<WorkbookSidebarFolders
 			v-bind="{
-				title: 'Queries',
+				title: __('Queries'),
 				emptyMessage: 'No queries',
 				items: workbook.doc.queries,
 				itemKey: 'name',
-				isActive: (idx: number) => workbook.isActiveTab('query', idx),
+				type: 'query',
 				add: workbook.addQuery,
 				remove: (query) => workbook.removeQuery(query.name),
-				route: (idx: number) => `/workbook/${workbook.name}/query/${idx}`,
+				isActive: (query) => workbook.isActiveTab('query', query.name),
+				route: (query) => `/workbook/${workbook.name}/query/${query.name}`,
 			}"
 		>
-			<template #item-icon>
-				<Table2 class="h-4 w-4 text-gray-700" stroke-width="1.5" />
+			<template #item-icon="{ item }">
+				<ScrollText
+					v-if="item.is_native_query"
+					class="h-4 w-4 text-gray-700"
+					stroke-width="1.5"
+				/>
+				<Braces
+					v-else-if="item.is_script_query"
+					class="h-4 w-4 text-gray-700"
+					stroke-width="1.5"
+				/>
+				<Table2 v-else class="h-4 w-4 text-gray-700" stroke-width="1.5" />
 			</template>
-		</WorkbookSidebarListSection>
+		</WorkbookSidebarFolders>
 
-		<WorkbookSidebarListSection
+		<WorkbookSidebarFolders
 			v-bind="{
-				title: 'Charts',
+				title: __('Charts'),
 				emptyMessage: 'No charts',
 				items: workbook.doc.charts,
 				itemKey: 'name',
-				isActive: (idx: number) => workbook.isActiveTab('chart', idx),
-				add: workbook.addChart,
+				type: 'chart',
+				add: () => workbook.addChart(activeQueryName),
 				remove: (chart) => workbook.removeChart(chart.name),
-				route: (idx: number) => `/workbook/${workbook.name}/chart/${idx}`,
+				isActive: (chart) => workbook.isActiveTab('chart', chart.name),
+				route: (chart) => `/workbook/${workbook.name}/chart/${chart.name}`,
 			}"
 		>
 			<template #item-icon="{ item }">
 				<ChartIcon :chart-type="item.chart_type" />
 			</template>
-		</WorkbookSidebarListSection>
+		</WorkbookSidebarFolders>
 
 		<WorkbookSidebarListSection
 			v-bind="{
-				title: 'Dashboards',
+				title: __('Dashboards'),
 				emptyMessage: 'No dashboards',
 				items: workbook.doc.dashboards,
 				itemKey: 'name',
-				isActive: (idx: number) => workbook.isActiveTab('dashboard', idx),
 				add: workbook.addDashboard,
 				remove: (dashboard) => workbook.removeDashboard(dashboard.name),
-				route: (idx: number) => `/workbook/${workbook.name}/dashboard/${idx}`,
+				isActive: (dashboard) => workbook.isActiveTab('dashboard', dashboard.name),
+				route: (dashboard) => `/workbook/${workbook.name}/dashboard/${dashboard.name}`,
 			}"
 		>
 			<template #item-icon>

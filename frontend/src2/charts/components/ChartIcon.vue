@@ -8,7 +8,9 @@ import {
 	Hash,
 	LifeBuoy,
 	LineChart,
+	Map,
 	ScatterChart,
+	Share2,
 	Table2,
 } from 'lucide-vue-next'
 import { computed } from 'vue'
@@ -23,7 +25,7 @@ const icon = computed(() => {
 			return LineChart
 		case 'Row':
 			return BarChartHorizontal
-		case 'Scatter':
+		case 'Bubble':
 			return ScatterChart
 		case 'Area':
 			return AreaChart
@@ -35,6 +37,10 @@ const icon = computed(() => {
 			return Table2
 		case 'Number':
 			return Hash
+		case 'Map':
+			return Map
+		case 'Sankey':
+			return Share2
 		default:
 			return BarChart3
 	}

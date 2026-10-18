@@ -1,8 +1,10 @@
 # Copyright (c) 2022, Frappe Technologies Pvt. Ltd. and contributors
 # For license information, please see license.txt
 
+import re
 import time
-from typing import TYPE_CHECKING, Callable, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Optional
 from urllib import parse
 
 import frappe
@@ -15,6 +17,12 @@ from insights.cache_utils import make_digest
 
 if TYPE_CHECKING:
     from sqlalchemy.engine.interfaces import Dialect
+
+
+# Enough to survive a dropped SYN, whose first retransmit lands about a second
+# in, and a TLS handshake over a wide area link. Short enough that probing a
+# host which does not answer, as is_frappe_db does, still fails quickly.
+CONNECT_TIMEOUT = 5
 
 
 def get_sqlalchemy_engine(connect_args=None, **kwargs) -> Engine:
@@ -35,12 +43,15 @@ def get_sqlalchemy_engine(connect_args=None, **kwargs) -> Engine:
     database = kwargs.pop("database")
     host = kwargs.pop("host", "localhost")
     port = kwargs.pop("port") or 3306
-    extra_params = "&".join(f"{k}={v}" for k, v in kwargs.items())
+    # each value becomes a query string, and the driver reads it back as a non-empty
+    # string. "ssl=False" would therefore turn SSL on. Drop falsy values instead of
+    # spelling them out.
+    extra_params = "&".join(f"{k}={v}" for k, v in kwargs.items() if v is not None and v is not False)
 
     uri = f"{dialect}+{driver}://{user}:{password}@{host}:{port}/{database}?{extra_params}"
 
     # TODO: cache the engine by uri
-    return create_engine(uri, poolclass=NullPool, connect_args={})
+    return create_engine(uri, poolclass=NullPool, connect_args=connect_args)
 
 
 def create_insights_table(table, force=False):
@@ -95,9 +106,7 @@ def create_insights_table(table, force=False):
 
     version = frappe.new_doc("Version")
     # if there's some update to store only then save the doc
-    doc_changed = (
-        version.update_version_info(doc_before, doc) or column_added or column_removed
-    )
+    doc_changed = version.update_version_info(doc_before, doc) or column_added or column_removed
     is_new = not exists
     if is_new or doc_changed or force:
         # need to ignore permissions when creating/updating a table in query store
@@ -128,9 +137,35 @@ def parse_sql_tables(sql: str):
     return [strip_quotes(table) for table in tables]
 
 
-def get_stored_query_sql(
-    sql: str, data_source: Optional[str] = None, dialect: Optional["Dialect"] = None
-):
+def replace_query_tags(sql: str | None, data_source: str) -> str | None:
+    """{{ QRY_1203 }} -> the SQL QRY-1203 builds.
+
+    Only for SQL a query's author wrote. Compiled SQL also holds the values of filters and
+    searches, and a tag typed into one of those must stay text.
+    """
+
+    # a query whose SQL leads back to itself keeps the tag as text instead of recursing
+    expanding = frappe.flags.setdefault("insights_expanding_queries", set())
+
+    def query_sql(match):
+        query_name = match.group(1).strip().replace("_", "-")
+        if (
+            query_name in expanding
+            or not query_name.startswith("QRY")
+            or not frappe.db.exists("Insights Query", query_name)
+        ):
+            return match.group(0)
+        expanding.add(query_name)
+        try:
+            query = frappe.get_doc("Insights Query", query_name)
+            return frappe.get_doc("Insights Data Source", data_source).build_query(query)
+        finally:
+            expanding.discard(query_name)
+
+    return re.sub(r"{{(.*?)}}", query_sql, sql) if sql else sql
+
+
+def get_stored_query_sql(sql: str, data_source: str | None = None, dialect: Optional["Dialect"] = None):
     """
     Takes a native sql query and returns a map of table name to the query along with the subqueries
 
@@ -185,17 +220,14 @@ def get_stored_query_sql(
         if data_source is None:
             data_source = sql.data_source
         if data_source and sql.data_source != data_source:
-            frappe.throw(
-                "Cannot use queries from different data sources in a single query"
-            )
+            frappe.throw("Cannot use queries from different data sources in a single query")
 
-        stored_query_sql[sql.name] = sql.sql
+        stored_sql = replace_query_tags(sql.sql, sql.data_source)
+        stored_query_sql[sql.name] = stored_sql
         if not sql.is_native_query:
             # non native queries are already processed and stored in the db
             continue
-        sub_stored_query_sql = get_stored_query_sql(
-            sql.sql, data_source, dialect=dialect
-        )
+        sub_stored_query_sql = get_stored_query_sql(sql.sql, data_source, dialect=dialect)
         # sub_stored_query_sql = { 'QRY-004': 'SELECT name FROM `Item`' }
         if not sub_stored_query_sql:
             continue
@@ -204,23 +236,20 @@ def get_stored_query_sql(
         for table, sub_query in sub_stored_query_sql.items():
             cte += f" {quoted(table)} AS ({sub_query}),"
         cte = cte[:-1]
-        stored_query_sql[sql.name] = f"{cte} {sql.sql}"
+        stored_query_sql[sql.name] = f"{cte} {stored_sql}"
 
     return stored_query_sql
 
 
 def make_wrap_table_fn(
-    dialect: Optional["Dialect"] = None, data_source: Optional[str] = None
+    dialect: Optional["Dialect"] = None, data_source: str | None = None
 ) -> Callable[[str], str]:
     if dialect:
         return dialect.identifier_preparer.quote_identifier
     elif data_source:
         quote = (
             "`"
-            if frappe.get_cached_value(
-                "Insights Data Source", data_source, "database_type"
-            )
-            == "MariaDB"
+            if frappe.get_cached_value("Insights Data Source", data_source, "database_type") == "MariaDB"
             else '"'
         )
         return lambda table: f"{quote}{table}{quote}"
@@ -288,9 +317,7 @@ def add_limit_to_sql(sql, limit=1000):
 
 def replace_query_tables_with_cte(sql, data_source, dialect=None):
     try:
-        return process_cte(
-            str(sql).strip().rstrip(";"), data_source=data_source, dialect=dialect
-        )
+        return process_cte(str(sql).strip().rstrip(";"), data_source=data_source, dialect=dialect)
     except Exception:
         frappe.log_error(title="Failed to process CTE")
         frappe.throw("Failed to replace query tables with CTE")
@@ -315,30 +342,26 @@ def execute_and_log(conn, sql, data_source, query_name):
 def handle_query_execution_error(e):
     err_lower = str(e).lower()
     if "duplicate column name" in err_lower:
-        frappe.throw(
-            "Duplicate column name. Please make sure the column labels are unique."
-        )
+        frappe.throw("Duplicate column name. Please make sure the column labels are unique.")
     if "syntax" in err_lower and "error" in err_lower:
-        frappe.throw(
-            "Syntax error in the query. Please check the browser console for more details."
-        )
+        frappe.throw("Syntax error in the query. Please check the browser console for more details.")
     frappe.throw(str(e).split("\n", 1)[0])
 
 
 def cache_results(sql, data_source, results):
     key = make_digest(sql, data_source)
+    query_result_expiry = frappe.db.get_single_value("Insights Settings", "query_result_expiry")
+    query_result_expiry_in_seconds = query_result_expiry * 60
     frappe.cache().set_value(
         f"insights_query_result:{data_source}:{key}",
         frappe.as_json(results),
-        expires_in_sec=60 * 5,
+        expires_in_sec=query_result_expiry_in_seconds,
     )
 
 
 def get_cached_results(sql, data_source):
     key = make_digest(sql, data_source)
-    return frappe.parse_json(
-        frappe.cache().get_value(f"insights_query_result:{data_source}:{key}")
-    )
+    return frappe.parse_json(frappe.cache().get_value(f"insights_query_result:{data_source}:{key}"))
 
 
 def create_execution_log(sql, data_source, time_taken=0, query_name=None):

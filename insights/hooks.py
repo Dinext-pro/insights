@@ -1,5 +1,5 @@
 app_name = "insights"
-app_title = "Frappe Insights"
+app_title = "Insights"
 app_publisher = "Frappe Technologies Pvt. Ltd."
 app_description = "Powerful Reporting Tool for Frappe Apps"
 app_icon = "octicon octicon-file-directory"
@@ -8,13 +8,34 @@ app_email = "hello@frappe.io"
 app_license = "GNU GPLv3"
 
 export_python_type_annotations = True
+require_type_annotated_api_methods = True
+
+
+add_to_apps_screen = [
+    {
+        "name": "insights",
+        "logo": "/assets/insights/frontend/insights-logo.png",
+        "title": "Insights",
+        "route": "/insights",
+        "has_permission": "insights.permissions.check_app_permission",
+    }
+]
+
+# Any app can ship workbooks to Insights by pointing this hook at a directory
+# (relative to the app) holding one folder per workbook — manifest.json +
+# workbook.json + optional preview.png. Insights is its own first consumer: the
+# bundled ERPNext workbooks are discovered through the same public contract.
+# Deliberately policy-free name: how the site consumes these (import a copy
+# today, versioned updates later) can evolve without breaking the hook.
+insights_workbooks = "workbook_templates"
+
 
 # Includes in <head>
 # ------------------
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/insights/css/insights.css"
-# app_include_js = "insights.bundle.js"
+app_include_js = "insights_nudge.bundle.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/insights/css/insights.css"
@@ -62,24 +83,14 @@ export_python_type_annotations = True
 # 	"filters": "insights.utils.jinja_filters"
 # }
 
-# Setup
-# ------------
-setup_wizard_requires = "assets/insights/js/setup_wizard.js"
-setup_wizard_stages = "insights.setup.setup_wizard.get_setup_stages"
-
 # Installation
 # ------------
 
 # before_install = "insights.install.before_install"
-# after_install = "insights.setup.after_install"
-# after_migrate = ["insights.migrate.after_migrate"]
+after_install = "insights.migrate.after_migrate"
+after_migrate = "insights.migrate.after_migrate"
 
-before_request = [
-    "insights.insights.doctype.insights_data_source_v3.insights_data_source_v3.before_request"
-]
-after_request = [
-    "insights.insights.doctype.insights_data_source_v3.insights_data_source_v3.after_request"
-]
+after_request = ["insights.insights.doctype.insights_data_source_v3.insights_data_source_v3.after_request"]
 
 fixtures = [
     {
@@ -88,11 +99,7 @@ fixtures = [
     },
     {
         "dt": "Insights Data Source v3",
-        "filters": {"name": ("in", ["Site DB"])},
-    },
-    {
-        "dt": "Insights Team",
-        "filters": {"name": ("in", ["Admin"])},
+        "filters": {"name": "Site DB"},
     },
 ]
 
@@ -113,14 +120,25 @@ fixtures = [
 # Permissions evaluated in scripted ways
 
 permission_query_conditions = {
-    "Insights Data Source v3": "insights.permissions.get_data_source_query_conditions",
-    "Insights Table v3": "insights.permissions.get_table_query_conditions",
-    "Insights Team": "insights.permissions.get_team_query_conditions",
+    "Insights Data Source v3": "insights.permissions.get_permission_query_conditions",
+    "Insights Table v3": "insights.permissions.get_permission_query_conditions",
+    "Insights Team": "insights.permissions.get_permission_query_conditions",
+    "Insights Workbook": "insights.permissions.get_permission_query_conditions",
+    "Insights Query v3": "insights.permissions.get_permission_query_conditions",
+    "Insights Chart v3": "insights.permissions.get_permission_query_conditions",
+    "Insights Dashboard v3": "insights.permissions.get_permission_query_conditions",
+    "Insights Alert": "insights.permissions.get_permission_query_conditions",
 }
 
 has_permission = {
     "Insights Data Source v3": "insights.permissions.has_doc_permission",
     "Insights Table v3": "insights.permissions.has_doc_permission",
+    "Insights Team": "insights.permissions.has_doc_permission",
+    "Insights Workbook": "insights.permissions.has_doc_permission",
+    "Insights Query v3": "insights.permissions.has_doc_permission",
+    "Insights Chart v3": "insights.permissions.has_doc_permission",
+    "Insights Dashboard v3": "insights.permissions.has_doc_permission",
+    "Insights Alert": "insights.permissions.has_doc_permission",
 }
 
 # DocType Class
@@ -147,7 +165,15 @@ doc_events = {
 scheduler_events = {
     "all": [
         "insights.insights.doctype.insights_alert.insights_alert.send_alerts",
-    ]
+    ],
+    "daily": [
+        "insights.api.data_store.sync_tables",
+        "insights.telemetry_scan.run_site_scan",
+    ],
+    "hourly": [
+        "insights.api.data_store.update_failed_sync_status",
+        "insights.insights.doctype.insights_table_import_job.insights_table_import_job.run_scheduled_imports",
+    ],
 }
 
 # Testing

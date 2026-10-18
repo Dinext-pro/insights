@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watchEffect } from 'vue'
+import { __ } from '../../translation'
 import { FIELDTYPES } from '../../helpers/constants'
 import { FunnelChartConfig } from '../../types/chart.types'
-import { DimensionOption, MeasureOption } from './ChartConfigForm.vue'
+import { ColumnOption, Dimension, DimensionOption, Measure } from '../../types/query.types'
 import CollapsibleSection from './CollapsibleSection.vue'
+import MeasurePicker from './MeasurePicker.vue'
+import DimensionPicker from './DimensionPicker.vue'
 
 const props = defineProps<{
 	dimensions: DimensionOption[]
-	measures: MeasureOption[]
+	columnOptions: ColumnOption[]
 }>()
 
 const config = defineModel<FunnelChartConfig>({
@@ -18,28 +21,34 @@ const config = defineModel<FunnelChartConfig>({
 	}),
 })
 
+watchEffect(() => {
+	if (!config.value.label_column) {
+		config.value.label_column = {} as Dimension
+	}
+	if (!config.value.value_column) {
+		config.value.value_column = {} as Measure
+	}
+})
+
 const discrete_dimensions = computed(() =>
-	props.dimensions.filter((d) => FIELDTYPES.DISCRETE.includes(d.data_type))
+	props.dimensions.filter((d) => FIELDTYPES.DISCRETE.includes(d.data_type)),
 )
 </script>
 
 <template>
 	<CollapsibleSection title="Options">
 		<div class="flex flex-col gap-3 pt-1">
-			<Autocomplete
+			<DimensionPicker
 				label="Label"
-				:showFooter="true"
+				v-model="config.label_column"
 				:options="discrete_dimensions"
-				:modelValue="config.label_column?.column_name"
-				@update:modelValue="config.label_column = $event"
 			/>
-			<Autocomplete
+			<MeasurePicker
 				label="Value"
-				:showFooter="true"
-				:options="props.measures"
-				:modelValue="config.value_column?.measure_name"
-				@update:modelValue="config.value_column = $event"
+				v-model="config.value_column"
+				:column-options="props.columnOptions"
 			/>
+			<Toggle v-model="config.show_percentage" :label="__('Show Percentage')" />
 		</div>
 	</CollapsibleSection>
 </template>
