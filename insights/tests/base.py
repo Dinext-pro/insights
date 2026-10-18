@@ -5,7 +5,10 @@ from unittest.mock import patch
 
 import frappe
 from frappe.database.database import Database
-from frappe.tests import IntegrationTestCase
+try:
+    from frappe.tests import IntegrationTestCase
+except ImportError:
+    from frappe.tests.utils import FrappeTestCase as IntegrationTestCase
 from frappe.utils import background_jobs
 
 from insights.insights.doctype.insights_data_source_v3 import data_warehouse

@@ -190,3 +190,7 @@ frontend/components.d.ts
 docs/
 scripts/
 .claude/
+
+# Local browser-test output
+cypress/screenshots/
+cypress/videos/
